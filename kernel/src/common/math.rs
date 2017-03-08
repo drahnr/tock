@@ -94,3 +94,4 @@ pub fn log_base_two(num: u32) -> u32 {
         31 - num.leading_zeros()
     }
 }
+
