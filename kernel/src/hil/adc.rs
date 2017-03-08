@@ -5,11 +5,11 @@ pub trait Client {
     /// Called when a sample is ready. Used for single sampling
     fn sample_done(&self, sample: u16);
 
-    /// Called when the buffer is full. Used for continuous sampling
-    /// Expects another buffer to be provided
+    ///// Called when the buffer is full. Used for continuous sampling
+    ///// Expects another buffer to be provided
     //fn buffer_full(&self, buf &'static [u8]) -> &'static [u8];
 
-    /// Called after sampling has been canceled. Used for continuous sampling
+    ///// Called after sampling has been canceled. Used for continuous sampling
     //fn sampling_complete(&self, buf &'static [u8]);
 }
 

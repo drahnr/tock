@@ -14,6 +14,7 @@
 
 use core::cell::Cell;
 use core::mem;
+use kernel::common::math;
 use kernel::common::volatile_cell::VolatileCell;
 use kernel::hil;
 use kernel::hil::adc;
@@ -62,6 +63,7 @@ impl Adc {
         Adc {
             registers: base_address,
             enabled: Cell::new(false),
+            converting: Cell::new(false),
             client: Cell::new(None),
         }
     }
@@ -111,11 +113,23 @@ impl adc::AdcSingle for Adc {
             unsafe {
                 pm::enable_clock(Clock::PBA(PBAClock::ADCIFE));
                 nvic::enable(nvic::NvicIdx::ADCIFE);
-                scif::generic_clock_enable(scif::GenericClock::GCLK10, scif::ClockSource::CLK_CPU);
+
+                // the clock used for the ADC must conform to 300000 >= F(clk)/6 so, in practice
+                // F(clk) < 1.8 MHz.
+                // To pick the correct clock divider, we solve F(clk)/2^(N+1) <= 1800000 for N,
+                // resulting in the smallest divider that will make the ADC work.
+                // This comes out to log_2(F(clk)/1800000) - 1 <= N, which is not enough.
+                // But getting the closest power of two above F(clk)/1800000 works out such that
+                // our result is >= N, which is what we want.
+                // Also the biggest divider we can use is 8-bit, so cap it to that
+                let cpu_frequency = pm::get_system_frequency();
+                let divisor = (cpu_frequency + (1800000 - 1)) / 1800000; // ceiling of division
+                let clock_divisor = (math::log_base_two(math::closest_power_of_two(divisor)) - 1) as u8;
+                scif::generic_clock_enable_divided(scif::GenericClock::GCLK10, scif::ClockSource::CLK_CPU, clock_divisor as u16);
             }
 
             // 2. Insert a fixed delay
-            for _ in 0..10000 {
+            for _ in 0..100000 {
                 let _ = regs.cr.get();
             }
 
