@@ -2,8 +2,15 @@ use returncode::ReturnCode;
 
 /// Trait for handling callbacks from ADC module.
 pub trait Client {
-    /// Called when a sample is ready.
+    /// Called when a sample is ready. Used for single sampling
     fn sample_done(&self, sample: u16);
+
+    /// Called when the buffer is full. Used for continuous sampling
+    /// Expects another buffer to be provided
+    //fn buffer_full(&self, buf &'static [u8]) -> &'static [u8];
+
+    /// Called after sampling has been canceled. Used for continuous sampling
+    //fn sampling_complete(&self, buf &'static [u8]);
 }
 
 /// Simple interface for reading a single ADC sample on any channel.
@@ -18,21 +25,13 @@ pub trait AdcSingle {
     fn cancel_sample(&self) -> ReturnCode;
 }
 
-pub trait Frequency {
-    fn frequency() -> u32;
-}
-
-#[derive(Debug)]
-pub struct Freq1KHz;
-impl Frequency for Freq1KHz {
-    fn frequency() -> u32 {
-        1000
-    }
-}
-
+/// Interface for continuously sampling at a given frequency on a channel.
 pub trait AdcContinuous {
-    type Frequency: Frequency;
-    fn compute_interval(&self, interval: u32) -> u32;
-    fn sample_continuous(&self, channel: u8, interval: u32) -> ReturnCode;
+
+    /// Start sampling continuously.
+    /// Samples are collected into the given buffer
+    fn sample_continuous(&self, channel: u8, frequency: u32, buf: &'static [u8]) -> ReturnCode;
+
+    /// Stop continuous sampling.
     fn cancel_sampling(&self) -> ReturnCode;
 }

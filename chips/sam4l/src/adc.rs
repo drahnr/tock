@@ -8,25 +8,6 @@
 //   - use a VCC/2 positive reference
 //   - are right justified
 //
-// NOTE: The pin labels/assignments on the Firestorm schematic are
-// incorrect. The mappings should be
-//   AD5 -> ADCIFE channel 6
-//   AD4 -> ADCIFE channel 5
-//   AD3 -> ADCIFE channel 4
-//   AD2 -> ADCIFE channel 3
-//   AD1 -> ADCIFE channel 2
-//   AD0 -> ADCIFE channel 1
-//
-// but in reality they are
-//   AD5 -> ADCIFE channel 1
-//   AD4 -> ADCIFE channel 2
-//   AD3 -> ADCIFE channel 3
-//   AD2 -> ADCIFE channel 4
-//   AD1 -> ADCIFE channel 5
-//   AD0 -> ADCIFE channel 6
-//
-//
-//
 // Author: Philip Levis <pal@cs.stanford.edu>
 // Date: August 5, 2015
 //
@@ -70,7 +51,7 @@ const BASE_ADDRESS: *mut AdcRegisters = 0x40038000 as *mut AdcRegisters;
 pub struct Adc {
     registers: *mut AdcRegisters,
     enabled: Cell<bool>,
-    channel: Cell<u8>,
+    converting: Cell<bool>,
     client: Cell<Option<&'static hil::adc::Client>>,
 }
 
@@ -81,7 +62,6 @@ impl Adc {
         Adc {
             registers: base_address,
             enabled: Cell::new(false),
-            channel: Cell::new(0),
             client: Cell::new(None),
         }
     }
@@ -91,19 +71,28 @@ impl Adc {
     }
 
     pub fn handle_interrupt(&mut self) {
-        let val: u16;
         let regs: &mut AdcRegisters = unsafe { mem::transmute(self.registers) };
+
         // Make sure this is the SEOC (Sequencer end-of-conversion) interrupt
         let status = regs.sr.get();
         if status & 0x01 == 0x01 {
+            // conversion complete
+            self.converting.set(false);
+
             // Clear SEOC interrupt
-            regs.scr.set(0x0000001);
+            regs.scr.set(0x00000001);
+
             // Disable SEOC interrupt
             regs.idr.set(0x00000001);
+
             // Read the value from the LCV register.
             // The sample is 16 bits wide
-            val = (regs.lcv.get() & 0xffff) as u16;
+            let val = (regs.lcv.get() & 0xffff) as u16;
             self.client.get().map(|client| { client.sample_done(val); });
+        } else if status & 0x20 == 0x20 {
+            //XXX: TESTING
+            // this is the timer time-out interrupt. Toggle a GPIO to check that we're setting the
+            // frequency right
         }
     }
 }
@@ -111,19 +100,22 @@ impl Adc {
 impl adc::AdcSingle for Adc {
     fn initialize(&self) -> ReturnCode {
         let regs: &mut AdcRegisters = unsafe { mem::transmute(self.registers) };
+
         if !self.enabled.get() {
             self.enabled.set(true);
+
             // This logic is from 38.6.1 "Initializing the ADCIFE" of
             // the SAM4L data sheet
             // 1. Start the clocks, ADC uses GCLK10, choose to
-            // source it from RCSYS (115Khz)
+            // source it from CLK_CPU (whichever clock the CPU is using)
             unsafe {
                 pm::enable_clock(Clock::PBA(PBAClock::ADCIFE));
                 nvic::enable(nvic::NvicIdx::ADCIFE);
-                scif::generic_clock_enable(scif::GenericClock::GCLK10, scif::ClockSource::RCSYS);
+                scif::generic_clock_enable(scif::GenericClock::GCLK10, scif::ClockSource::CLK_CPU);
             }
+
             // 2. Insert a fixed delay
-            for _ in 1..10000 {
+            for _ in 0..10000 {
                 let _ = regs.cr.get();
             }
 
@@ -134,6 +126,7 @@ impl adc::AdcSingle for Adc {
 
             // 4. Wait until ADC ready
             while regs.sr.get() & (1 << 24) == 0 {}
+
             // 5. Turn on bandgap and reference buffer
             let cr2: u32 = (1 << 10) | (1 << 8) | (1 << 4);
             regs.cr.set(cr2);
@@ -147,17 +140,27 @@ impl adc::AdcSingle for Adc {
             regs.cfg.set(0x00000008);
             while regs.sr.get() & (0x51000000) != 0x51000000 {}
         }
-        return ReturnCode::SUCCESS;
+
+        ReturnCode::SUCCESS
     }
 
     fn sample(&self, channel: u8) -> ReturnCode {
         let regs: &mut AdcRegisters = unsafe { mem::transmute(self.registers) };
+
         if !self.enabled.get() {
-            return ReturnCode::EOFF;
+            ReturnCode::EOFF
+
         } else if channel > 14 {
-            return ReturnCode::EINVAL;
+            // valid channels are 0-14 only
+            ReturnCode::EINVAL
+
+        } else if self.converting.get() {
+            // only one sample at a time
+            ReturnCode::EBUSY
+
         } else {
-            self.channel.set(channel);
+            self.converting.set(true);
+
             // This configuration sets the ADC to use Pad Ground as the
             // negative input, and the ADC channel as the positive. Since
             // this is a single-ended sample, the bipolar bit is set to zero.
@@ -165,7 +168,7 @@ impl adc::AdcSingle for Adc {
             // sample. Gain is 0.5x (set to 111). Resolution is set to 12 bits
             // (set to 0).
 
-            let chan_field: u32 = (self.channel.get() as u32) << 16;
+            let chan_field: u32 = (channel as u32) << 16; // MUXPOS
             let mut cfg: u32 = chan_field;
             cfg |= 0x00700000; // MUXNEG   = 111 (ground pad)
             cfg |= 0x00008000; // INTERNAL =  10 (int neg, ext pos)
@@ -176,32 +179,45 @@ impl adc::AdcSingle for Adc {
             cfg |= 0x00000000; // BIPOLAR  =   0 (not bipolar)
             cfg |= 0x00000000; // HWLA     =   0 (no left justify value)
             regs.seqcfg.set(cfg);
+
             // Enable end of conversion interrupt
             regs.ier.set(1);
+
             // Initiate conversion
             regs.cr.set(8);
-            return ReturnCode::SUCCESS;
+
+            ReturnCode::SUCCESS
         }
     }
 
     fn cancel_sample(&self) -> ReturnCode {
-        return ReturnCode::FAIL;
+        return ReturnCode::FAIL
     }
 }
 
-/// Not implemented yet. -pal 12/22/16
 impl adc::AdcContinuous for Adc {
-    type Frequency = adc::Freq1KHz;
 
-    fn compute_interval(&self, interval: u32) -> u32 {
-        interval
-    }
+    fn sample_continuous(&self, channel: u8, frequency: u32, buf: &'static [u8]) -> ReturnCode {
+        // configure ADC
 
-    fn sample_continuous(&self, _channel: u8, _interval: u32) -> ReturnCode {
+        // configure ADC timer
+
+        // configure DMA transfer
+
+        // begin sampling
+
         ReturnCode::FAIL
     }
 
     fn cancel_sampling(&self) -> ReturnCode {
+        // check if running
+
+        // stop ADC
+
+        // cancel DMA transfer
+
+        // call buffer_full as if dma completed with proper size
+
         ReturnCode::FAIL
     }
 }
