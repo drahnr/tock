@@ -124,8 +124,11 @@ impl adc::AdcSingle for Adc {
                 // Also the biggest divider we can use is 8-bit, so cap it to that
                 let cpu_frequency = pm::get_system_frequency();
                 let divisor = (cpu_frequency + (1800000 - 1)) / 1800000; // ceiling of division
-                let clock_divisor = (math::log_base_two(math::closest_power_of_two(divisor)) - 1) as u8;
-                scif::generic_clock_enable_divided(scif::GenericClock::GCLK10, scif::ClockSource::CLK_CPU, clock_divisor as u16);
+                let clock_divisor = (math::log_base_two(math::closest_power_of_two(divisor)) -
+                                     1) as u8;
+                scif::generic_clock_enable_divided(scif::GenericClock::GCLK10,
+                                                   scif::ClockSource::CLK_CPU,
+                                                   clock_divisor as u16);
             }
 
             // 2. Insert a fixed delay
@@ -205,12 +208,11 @@ impl adc::AdcSingle for Adc {
     }
 
     fn cancel_sample(&self) -> ReturnCode {
-        return ReturnCode::FAIL
+        ReturnCode::FAIL
     }
 }
 
 impl adc::AdcContinuous for Adc {
-
     fn sample_continuous(&self, channel: u8, frequency: u32, buf: &'static [u8]) -> ReturnCode {
         // configure ADC
 

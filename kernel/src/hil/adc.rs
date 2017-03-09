@@ -27,7 +27,6 @@ pub trait AdcSingle {
 
 /// Interface for continuously sampling at a given frequency on a channel.
 pub trait AdcContinuous {
-
     /// Start sampling continuously.
     /// Samples are collected into the given buffer
     fn sample_continuous(&self, channel: u8, frequency: u32, buf: &'static [u8]) -> ReturnCode;
