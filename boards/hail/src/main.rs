@@ -403,6 +403,12 @@ pub unsafe fn reset_handler() {
     let mut chip = sam4l::chip::Sam4l::new();
     chip.mpu().enable_mpu();
 
+    //XXX ADC debugging
+    use kernel::hil::adc::AdcSingle;
+    use kernel::hil::adc::AdcContinuous;
+    adc::ADC.initialize();
+    adc::ADC.sample_continuous(3, 44100, &sam4l::adc::TEST_BUFFER, &sam4l::gpio::PB[15]);
+
     // Uncomment to measure overheads for TakeCell and MapCell:
     // test_take_map_cell::test_take_map_cell();
 

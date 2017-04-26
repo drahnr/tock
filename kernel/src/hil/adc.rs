@@ -22,7 +22,6 @@ pub trait AdcSingle {
     /// Request a single ADC sample on a particular channel.
     /// Returns true on success.
     fn sample(&self, channel: u8) -> ReturnCode;
-    fn cancel_sample(&self) -> ReturnCode;
 }
 
 /// Interface for continuously sampling at a given frequency on a channel.

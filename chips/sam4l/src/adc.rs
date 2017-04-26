@@ -53,6 +53,7 @@ pub struct Adc {
     registers: *mut AdcRegisters,
     enabled: Cell<bool>,
     converting: Cell<bool>,
+    adc_clk_freq: Cell<u32>,
     client: Cell<Option<&'static hil::adc::Client>>,
 }
 
@@ -64,6 +65,7 @@ impl Adc {
             registers: base_address,
             enabled: Cell::new(false),
             converting: Cell::new(false),
+            adc_clk_freq: Cell::new(0),
             client: Cell::new(None),
         }
     }
@@ -95,6 +97,7 @@ impl Adc {
             //XXX: TESTING
             // this is the timer time-out interrupt. Toggle a GPIO to check that we're setting the
             // frequency right
+            panic!("Got timer timeout");
         }
     }
 }
@@ -129,7 +132,10 @@ impl adc::AdcSingle for Adc {
                 scif::generic_clock_enable_divided(scif::GenericClock::GCLK10,
                                                    scif::ClockSource::CLK_CPU,
                                                    clock_divisor as u16);
+
+                self.adc_clk_freq.set(cpu_frequency / 2 << (clock_divisor + 1));
             }
+            debug!("adc_clk_freq: {}", self.adc_clk_freq.get());
 
             // 2. Insert a fixed delay
             for _ in 0..100000 {
@@ -206,23 +212,46 @@ impl adc::AdcSingle for Adc {
             ReturnCode::SUCCESS
         }
     }
-
-    fn cancel_sample(&self) -> ReturnCode {
-        ReturnCode::FAIL
-    }
 }
 
 impl adc::AdcContinuous for Adc {
     fn sample_continuous(&self, channel: u8, frequency: u32, buf: &'static [u8]) -> ReturnCode {
-        // configure ADC
+        let regs: &mut AdcRegisters = unsafe { mem::transmute(self.registers) };
 
-        // configure ADC timer
+        if !self.enabled.get() {
+            ReturnCode::EOFF
 
-        // configure DMA transfer
+        } else if channel > 14 {
+            // valid channels are 0-14 only
+            ReturnCode::EINVAL
 
-        // begin sampling
+        } else if self.converting.get() {
+            // only one sample at a time
+            ReturnCode::EBUSY
 
-        ReturnCode::FAIL
+        else if frequency == 0 || frequency > self.adc_clk_freq.get() {
+            // can't sample faster than the clock
+            ReturnCode::EINVAL
+
+        } else {
+            self.converting.set(true);
+
+            // configure ADC
+
+            // configure ADC timer
+            let timeout = ((self.adc_clk_freq.get() / frequency) - 1) as u16;
+            debug!("timeout {}", timeout);
+
+            regs.itmc.set(timeout)
+            regs.ier.set(5);
+            regs.cr.set(4);
+
+            // configure DMA transfer
+
+            // begin sampling
+
+            ReturnCode::SUCCESS
+        }
     }
 
     fn cancel_sampling(&self) -> ReturnCode {
