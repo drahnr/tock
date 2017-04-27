@@ -13,6 +13,7 @@
 //
 
 use core::cell::Cell;
+use core::cmp;
 use core::mem;
 use kernel::common::math;
 use kernel::common::volatile_cell::VolatileCell;
@@ -79,91 +80,30 @@ impl Adc {
 
     pub fn handle_interrupt(&mut self) {
         let regs: &mut AdcRegisters = unsafe { mem::transmute(self.registers) };
-
-        // Make sure this is the SEOC (Sequencer end-of-conversion) interrupt
         let status = regs.sr.get();
-        
-        /*
-        // single sampling
-        if status & 0x01 == 0x01 {
-            // conversion complete
-            self.converting.set(false);
 
-            //// Disable SEOC interrupt
-            //regs.idr.set(0x00000001);
-
-            // Read the value from the LCV register.
-            // The sample is 16 bits wide
-            let val = (regs.lcv.get() & 0xffff) as u16;
-            //panic!("ADC Val: {:#X}", val);
-            self.client.get().map(|client| { client.sample_done(val); });
-
-            // Clear SEOC interrupt
-            regs.scr.set(0x00000001);
-            */
-
-        /*
-        // multi sampling
-        if status & 0x01 == 0x01 {
-            let val = (regs.lcv.get() & 0xffff) as u16;
-
-            // trigger GPIO pin
-            unsafe{
-                use gpio;
-                gpio::PB[14].toggle();
-            }
-
-            regs.scr.set(0x00000001);
-        }
-        */
-
-
-        // timer sampling
-        if status & 0x20 == 0x20 {
-            //let val = (regs.lcv.get() & 0xffff) as u16;
-
-            //// trigger GPIO pin
-            //unsafe{
-            //    use gpio;
-            //    gpio::PB[14].toggle();
-            //}
-
-            // looks like we don't need to restart the timer manually
-            //regs.cr.set(4);
-
-            regs.scr.set(0x00000020);
-
-        }
-        
-        if status & 0x01 == 0x01 {
-            let val = (regs.lcv.get() & 0xffff) as u16;
-
-            // trigger GPIO pin
-            unsafe{
-                use gpio;
-                gpio::PB[14].toggle();
-            }
-
-            regs.scr.set(0x00000001);
-        }
-
-        if status & 0x02 == 0x02 || status & 0x04 == 0x04 || status & 0x08 == 0x08 {
-            panic!("ADC failure: {:#X}", status);
+        if status & 0x0E != 0x00 {
+            panic!("Other ADC interrupt: {:#X}", status);
             //regs.scr.set(0x0E);
         }
 
-        
-        //regs.scr.set(0xFFFFFFFF);
+        if status & 0x51000000 != 0x51000000 {
+            panic!("Bad status? {:#X}", status);
+        }
 
+        // sequencer end of conversion (sample complete)
+        if status & 0x01 == 0x01 {
+            let val = (regs.lcv.get() & 0xffff) as u16;
 
-        //} else if status & 0x20 == 0x20 {
-        //    //XXX: TESTING
-        //    // this is the timer time-out interrupt. Toggle a GPIO to check that we're setting the
-        //    // frequency right
-        //    panic!("Got timer timeout");
-        //}
+            // trigger GPIO pin
+            unsafe{
+                use gpio;
+                gpio::PB[14].toggle();
+                gpio::PB[14].toggle();
+            }
 
-        //regs.scr.set(0xFFFFFFFF);
+            regs.scr.set(0x00000001);
+        }
     }
 }
 
@@ -174,125 +114,72 @@ impl adc::AdcSingle for Adc {
         if !self.enabled.get() {
             self.enabled.set(true);
 
-            /*
-            // This logic is from 38.6.1 "Initializing the ADCIFE" of
-            // the SAM4L data sheet
-            // 1. Start the clocks, ADC uses GCLK10, choose to
-            // source it from CLK_CPU (whichever clock the CPU is using)
-            unsafe {
-                pm::enable_clock(Clock::PBA(PBAClock::ADCIFE));
-                nvic::enable(nvic::NvicIdx::ADCIFE);
-
-                //// original:
-                //scif::generic_clock_enable(scif::GenericClock::GCLK10, scif::ClockSource::RCSYS);
-
-                // I think this is just all wrong. it's 2(N+1) not 2^(N+1)...
-                //// the clock used for the ADC must conform to 300000 >= F(clk)/6 so, in practice
-                //// F(clk) < 1.8 MHz.
-                //// To pick the correct clock divider, we solve F(clk)/2^(N+1) <= 1800000 for N,
-                //// resulting in the smallest divider that will make the ADC work.
-                //// This comes out to log_2(F(clk)/1800000) - 1 <= N, which is not enough.
-                //// But getting the closest power of two above F(clk)/1800000 works out such that
-                //// our result is >= N, which is what we want.
-                //// Also the biggest divider we can use is 8-bit, so cap it to that
-                //let cpu_frequency = pm::get_system_frequency();
-                //let divisor = (cpu_frequency + (1800000 - 1)) / 1800000; // ceiling of division
-                //let clock_divisor = (math::log_base_two(math::closest_power_of_two(divisor)) -
-                //                     1) as u8;
-                //scif::generic_clock_enable_divided(scif::GenericClock::GCLK10,
-                //                                   scif::ClockSource::CLK_CPU,
-                //                                   clock_divisor as u16);
-                //self.adc_clk_freq.set(cpu_frequency / (2 << (clock_divisor + 1)));
-
-                let cpu_frequency = pm::get_system_frequency();
-                //let clock_divisor = 3; //XXX: replace with math
-                let clock_divisor = 3; //XXX: replace with math
-                scif::generic_clock_enable_divided(scif::GenericClock::GCLK10,
-                                                   scif::ClockSource::CLK_CPU,
-                                                   clock_divisor as u16);
-                self.adc_clk_freq.set(cpu_frequency / (4*2*(clock_divisor+1))); // the 4 accounts for cfg settings
-
-                debug!("system clock: {}", cpu_frequency);
-                debug!("divisor: {}", clock_divisor);
-                debug!("adc_clk_freq: {}", self.adc_clk_freq.get());
-            }
-
-            // 2. Insert a fixed delay
-            for _ in 0..100000 {
-                let _ = regs.cr.get();
-            }
-
-            // 3, Enable the ADC
-            let mut cr: u32 = regs.cr.get();
-            cr |= 1 << 8;
-            regs.cr.set(cr);
-
-            // 4. Wait until ADC ready
-            let mut timeout = 10000;
-            while regs.sr.get() & (1 << 24) == 0 {
-                timeout -= 1;
-                if timeout == 0 {
-                    //XXX: Change to returning an error
-                    panic!("ADC timed out in step 4");
-                }
-            }
-
-            // 5. Turn on bandgap and reference buffer
-            let cr2: u32 = (1 << 10) | (1 << 8) | (1 << 4);
-            regs.cr.set(cr2);
-
-            // 6. Configure the ADCIFE
-            // Setting below in the configuration register sets
-            //   - the clock divider to be 4,
-            //   - the source to be the Generic clock,
-            //   - the max speed to be 300 ksps, and
-            //   - the reference voltage to be VCC/2
-            regs.cfg.set(0x00000008);
-            timeout = 10000;
-            while regs.sr.get() & (0x51000000) != 0x51000000 {
-                timeout -= 1;
-                if timeout == 0 {
-                    //XXX: Change to returning an error
-                    panic!("ADC timed out in step 6");
-                }
-            }
-        }
-        */
-
             // First, enable the clocks
-            // 
+            // Both the ADCIFE clock and GCLK10 are needed
+            let mut clock_divisor = 0;
             unsafe {
-                // turn on ADCIFE bus clock
+                // turn on ADCIFE bus clock. Already set to the same frequency
+                // as the CPU clock
                 pm::enable_clock(Clock::PBA(PBAClock::ADCIFE));
                 nvic::enable(nvic::NvicIdx::ADCIFE);
 
                 // turn on GCLK10. The Generic Clock is needed for the ADC to
                 // work, although I have no idea what it is needed for. Its
                 // speed does not seem to matter, so let's just peg it to the
-                // CPU
+                // CPU clock
                 scif::generic_clock_enable(scif::GenericClock::GCLK10, scif::ClockSource::CLK_CPU);
-                /*
-                let clock_divisor = 0; //XXX: replace with math
-                scif::generic_clock_enable_divided(scif::GenericClock::GCLK10,
-                                                   scif::ClockSource::CLK_CPU,
-                                                   clock_divisor as u16);
-                                                   */
 
-                //
+                // determine clock divider
+                // we need the ADC_CLK to be a maximum of 1.5 MHz in frequency, so we need to find
+                // the PRESCAL value that will make this happen.
+                // Formula: f(ADC_CLK) = f(CLK_CPU)/2^(N+2) <= 1.5 MHz and we solve for N
+                // becomes: N <= ceil(log_2(f(CLK_CPU)/1500000)) - 2
+                let cpu_frequency = pm::get_system_frequency();
+                let divisor = (cpu_frequency + (1500000 - 1)) / 1500000; // ceiling of division
+                clock_divisor = math::log_base_two(math::closest_power_of_two(divisor)) - 2;
+                clock_divisor = cmp::min(cmp::max(clock_divisor, 0), 7); // keep in bounds
+                self.adc_clk_freq.set(cpu_frequency / (1 << (clock_divisor+2)));
+                debug!("{} {} {} {}", cpu_frequency, divisor, clock_divisor, self.adc_clk_freq.get());
             }
 
-            regs.cfg.set(0x3 << 8 | 0x1 << 6 | 0x0 << 4 | 0x4 << 1);
+            // configure the ADC
+            let cfg_val = (clock_divisor << 8) | // PRESCAL: clock divider
+                          (0x1 << 6) | // CLKSEL: use ADCIFE clock
+                          (0x0 << 4) | // SPEED: maximum 300 ksps
+                          (0x4 << 1);  // REFSEL: VCC/2 reference
+            regs.cfg.set(cfg_val);
 
+            // software reset (does not clear registers)
             regs.cr.set(1);
+
+            // enable ADC
             regs.cr.set(1 << 8);
 
-            while regs.sr.get() & (0x1 << 24) != (0x1 << 24) {}
+            // wait until status is enabled
+            let mut timeout = 10000;
+            while regs.sr.get() & (0x1 << 24) != (0x1 << 24) {
+                timeout -= 1;
+                if timeout == 0 {
+                    //XXX: replace with a returncode
+                    panic!("ADC never enabled!");
+                }
+            }
 
-            regs.cr.set(0x1 << 4);
-            regs.cr.set(0x1 << 10);
+            // enable Bandgap buffer and Reference buffer. I don't actually
+            // know what these do, but you need to turn them on
+            let cr_val = (0x1 << 10) | // BGREQEN: Enable bandgap buffer request
+                         (0x1 <<  4);  // REFBUFEN: Enable reference buffer
+            regs.cr.set(cr_val);
 
-            while regs.sr.get() & (0x51000000) != 0x51000000 {}
-
+            // wait until buffers are enabled
+            timeout = 100000;
+            while regs.sr.get() & (0x51000000) != 0x51000000 {
+                timeout -= 1;
+                if timeout == 0 {
+                    //XXX: replace with a returncode
+                    panic!("ADC buffers never enabled!");
+                }
+            }
         }
 
         ReturnCode::SUCCESS
@@ -315,29 +202,24 @@ impl adc::AdcSingle for Adc {
         } else {
             self.converting.set(true);
 
-            // This configuration sets the ADC to use Pad Ground as the
-            // negative input, and the ADC channel as the positive. Since
-            // this is a single-ended sample, the bipolar bit is set to zero.
-            // Trigger select is set to zero because this denotes a software
-            // sample. Gain is 0.5x (set to 111). Resolution is set to 12 bits
-            // (set to 0).
-
-            let chan_field: u32 = (channel as u32) << 16; // MUXPOS
-            let mut cfg: u32 = chan_field;
-            cfg |= 0x00700000; // MUXNEG   = 111 (ground pad)
-            cfg |= 0x00008000; // INTERNAL =  10 (int neg, ext pos)
-            cfg |= 0x00000000; // RES      =   0 (12-bit)
-            cfg |= 0x00000000; // TRGSEL   =   0 (software)
-            cfg |= 0x00000000; // GCOMP    =   0 (no gain error corr)
-            cfg |= 0x00000070; // GAIN     = 111 (0.5x gain)
-            cfg |= 0x00000000; // BIPOLAR  =   0 (not bipolar)
-            cfg |= 0x00000000; // HWLA     =   0 (no left justify value)
+            let cfg = (0x7 << 20) | // MUXNEG: ground pad
+                      ((channel as u32) << 16) | // MUXPOS: ADC channel
+                      (0x2 << 14) | // INTERNAL: internal neg, external pos
+                      (0x0 << 12) | // RES: 12-bit resolution
+                      (0x0 <<  8) | // TRGSEL: software trigger
+                      (0x0 <<  7) | // GCOMP: no gain compensation
+                      (0x7 <<  4) | // GAIN: 0.5x gain
+                      (0x0 <<  2) | // BIPOLAR: unipolar mode
+                      (0x0 <<  0);  // HWLA: right justify value
             regs.seqcfg.set(cfg);
 
-            // Enable end of conversion interrupt
+            // clear any current status
+            regs.scr.set(0x2F);
+
+            // enable end of conversion interrupt
             regs.ier.set(1);
 
-            // Initiate conversion
+            // initiate conversion
             regs.cr.set(8);
 
             ReturnCode::SUCCESS
@@ -367,84 +249,43 @@ impl adc::AdcContinuous for Adc {
         } else {
             self.converting.set(true);
 
+            //XXX: testing, remove
             unsafe{
                 use gpio;
                 gpio::PB[14].clear();
             }
 
-            // Enable end of conversion interrupt
-            //regs.ier.set(1);
-
-            // continuous
-            //let chan_field: u32 = (channel as u32) << 16; // MUXPOS
-            //let mut cfg: u32 = chan_field;
-            //cfg |= 0x00700000; // MUXNEG   = 111 (ground pad)
-            //cfg |= 0x00008000; // INTERNAL =  10 (int neg, ext pos)
-            //cfg |= 0x00000000; // RES      =   0 (12-bit)
-            //cfg |= 0x00000300; // TRGSEL   = 011 (continuous)
-            //cfg |= 0x00000000; // GCOMP    =   0 (no gain error corr)
-            //cfg |= 0x00000070; // GAIN     = 111 (0.5x gain)
-            //cfg |= 0x00000000; // BIPOLAR  =   0 (not bipolar)
-            //cfg |= 0x00000000; // HWLA     =   0 (no left justify value)
-            //regs.seqcfg.set(cfg);
-
-
-            // timer
-           // let chan_field: u32 = (channel as u32) << 16; // MUXPOS
-           // let mut cfg: u32 = chan_field;
-           // cfg |= 0x00700000; // MUXNEG   = 111 (ground pad)
-           // cfg |= 0x00008000; // INTERNAL =  10 (int neg, ext pos)
-           // cfg |= 0x00000000; // RES      =   0 (12-bit)
-           // cfg |= 0x00000100; // TRGSEL   = 001 (timer)
-           // cfg |= 0x00000000; // GCOMP    =   0 (no gain error corr)
-           // cfg |= 0x00000070; // GAIN     = 111 (0.5x gain)
-           // cfg |= 0x00000000; // BIPOLAR  =   0 (not bipolar)
-           // cfg |= 0x00000000; // HWLA     =   0 (no left justify value)
-           // regs.seqcfg.set(cfg);
-
-
-            // timer
-            let chan_field: u32 = (channel as u32) << 16; // MUXPOS
-            let mut cfg: u32 = chan_field;
-            cfg |= 0x00300000; // MUXNEG   = 011 (reference ground)
-            cfg |= 0x00008000; // INTERNAL =  10 (int neg, ext pos)
-            cfg |= 0x00000000; // RES      =   0 (12-bit)
-            cfg |= 0x00000100; // TRGSEL   = 001 (timer)
-            cfg |= 0x00000000; // GCOMP    =   0 (no gain error corr)
-            cfg |= 0x00000070; // GAIN     = 111 (0.5x gain)
-            cfg |= 0x00000004; // BIPOLAR  =   1 (bipolar)
-            cfg |= 0x00000000; // HWLA     =   0 (no left justify value)
+            let cfg = (0x7 << 20) | // MUXNEG: ground pad
+                      ((channel as u32) << 16) | // MUXPOS: ADC channel
+                      (0x2 << 14) | // INTERNAL: internal neg, external pos
+                      (0x0 << 12) | // RES: 12-bit resolution
+                      (0x1 <<  8) | // TRGSEL: internal timer trigger
+                      (0x0 <<  7) | // GCOMP: no gain compensation
+                      (0x7 <<  4) | // GAIN: 0.5x gain
+                      (0x0 <<  2) | // BIPOLAR: unipolar mode
+                      (0x0 <<  0);  // HWLA: right justify value
             regs.seqcfg.set(cfg);
 
+            // stop timer if running
+            regs.cr.set(0x02);
+
+            // set timer, limit to bounds
+            // f(timer) = f(adc) / (counter + 1)
+            let mut counter = (self.adc_clk_freq.get() / frequency) - 1;
+            counter = cmp::max(cmp::min(counter, 0xFFFF), 0);
+            regs.itimer.set(counter);
+
+            // clear any current status
+            regs.scr.set(0x2F);
+
+            // enable timer interrupt
             //regs.ier.set(0x20);
 
-            regs.scr.set(0x2F);
-            regs.ier.set(0x2F);
+            //XXX: testing, enable all interrupts
+            regs.ier.set(0x0F);
 
-            regs.itimer.set(1000);
-            //// shooting for 1 kHz
-            //regs.itimer.set(6000);
-
-            regs.cr.set(4);
-
-
-            // Initiate conversion
-            //regs.cr.set(8);
-
-
-            //// configure ADC
-            //
-            //// configure ADC timer
-            //let timeout = ((self.adc_clk_freq.get() / frequency) - 1) as u16;
-            //debug!("timeout {}", timeout);
-            //
-            ////regs.itmc.set(timeout);
-            //regs.ier.set(5);
-            //regs.cr.set(4);
-            //
-            //// configure DMA transfer
-            //
-            //// begin sampling
+            // start timer
+            regs.cr.set(0x04);
 
             ReturnCode::SUCCESS
         }
@@ -463,7 +304,8 @@ impl adc::AdcContinuous for Adc {
     }
 }
 
-//interrupt_handler!(adcife_handler, ADCIFE);
+interrupt_handler!(adcife_handler, ADCIFE);
+/*
 #[no_mangle]
 #[allow(non_snake_case)]
 #[allow(unused_imports)]
@@ -502,6 +344,7 @@ pub unsafe extern fn adcife_handler() {
 
     if status & 0x01 == 0x01 {
         let val = (regs.lcv.get() & 0xffff) as u16;
+        //panic!("ADC Val: {:#X}", val);
 
         // trigger GPIO pin
         unsafe{
@@ -512,24 +355,25 @@ pub unsafe extern fn adcife_handler() {
         regs.scr.set(0x00000001);
     }
 
-   // // multi sampling
-   // // Make sure this is the SEOC (Sequencer end-of-conversion) interrupt
-   // let status = regs.sr.get();
-   // if status & 0x01 == 0x01 {
-   //     let val = (regs.lcv.get() & 0xffff) as u16;
-//
-//        // trigger GPIO pin
-//        unsafe{
-//            use gpio;
-//            gpio::PB[14].toggle();
-//        }
-//
-//        regs.scr.set(0xFFFFFFFF);
-//    }
-//    //} else {
-//
-//        //let nvic = nvic::NvicIdx::ADCIFE;
-//        //nvic::disable(nvic);
-//        //chip::INTERRUPT_QUEUE.as_mut().unwrap().enqueue(nvic);
-//    //}
+    // // multi sampling
+    // // Make sure this is the SEOC (Sequencer end-of-conversion) interrupt
+    // let status = regs.sr.get();
+    // if status & 0x01 == 0x01 {
+    //     let val = (regs.lcv.get() & 0xffff) as u16;
+    //
+    //        // trigger GPIO pin
+    //        unsafe{
+    //            use gpio;
+    //            gpio::PB[14].toggle();
+    //        }
+    //
+    //        regs.scr.set(0xFFFFFFFF);
+    //    }
+    //    //} else {
+    //
+    //        //let nvic = nvic::NvicIdx::ADCIFE;
+    //        //nvic::disable(nvic);
+    //        //chip::INTERRUPT_QUEUE.as_mut().unwrap().enqueue(nvic);
+    //    //}
 }
+*/
