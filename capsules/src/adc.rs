@@ -1,24 +1,33 @@
 //! ADC Capsule
 //!
 //! Provides userspace applications with the ability to sample
-//! ADC channels.
+//! analog signals.
 
 use core::cell::Cell;
 use kernel::{AppId, AppSlice, Callback, Container, Driver, ReturnCode, Shared};
-use kernel::common::take_cell::{MapCell};
-use kernel::hil::adc::{Client, ADCChannel, ADCSingle, ADCContinuous};
+use kernel::common::take_cell::{MapCell, TakeCell};
+use kernel::hil;
 
-pub struct ADC<'a, A: ADCSingle + ADCContinuous + 'a> {
+pub struct ADC<'a, A: hil::adc::ADCSingle + hil::adc::ADCContinuous + 'a> {
     // ADC driver
     adc: &'a A,
-    channels: &'a [&'a ADCChannel],
+    channels: &'a [&'a <A as hil::adc::ADCSingle>::Channel],
 
     // ADC state
     app_state: MapCell<AppState>,
-    active: Cell<bool>
+    active: Cell<bool>,
+
+    // ADC buffers
+    adc_buf1: TakeCell<'static, [u16]>,
+    adc_buf2: TakeCell<'static, [u16]>,
 }
 
-#[derive(Default)]
+enum CallbackType {
+    SingleSample = 0,
+    SampleBuffer = 1,
+    ContinuousSample = 2,
+}
+
 pub struct AppState {
     channel: Option<usize>,
     callback: Option<Callback>,
@@ -26,8 +35,11 @@ pub struct AppState {
     sample_buffer2: Option<AppSlice<Shared, u8>>,
 }
 
-impl<'a, A: ADCSingle + ADCContinuous + 'a> ADC<'a, A> {
-    pub fn new(adc: &'a A, channels: &'a [&'a ADCChannel]) -> ADC<'a, A> {
+pub static mut ADC_BUFFER1: [u16; 128] = [0; 128];
+pub static mut ADC_BUFFER2: [u16; 128] = [0; 128];
+
+impl<'a, A: hil::adc::ADCSingle + hil::adc::ADCContinuous + 'a> ADC<'a, A> {
+    pub fn new(adc: &'a A, channels: &'a [&'a <A as hil::adc::ADCSingle>::Channel], adc_buf1: &'static mut [u16; 128], adc_buf2: &'static mut [u16; 128]) -> ADC<'a, A> {
         ADC {
             // ADC driver
             adc: adc,
@@ -41,6 +53,10 @@ impl<'a, A: ADCSingle + ADCContinuous + 'a> ADC<'a, A> {
                 sample_buffer2: None,
             }),
             active: Cell::new(false),
+
+            // ADC buffers
+            adc_buf1: TakeCell::new(adc_buf1),
+            adc_buf2: TakeCell::new(adc_buf2),
         }
     }
 
@@ -101,18 +117,34 @@ impl<'a, A: ADCSingle + ADCContinuous + 'a> ADC<'a, A> {
         }
         let chan = self.channels[channel];
 
+        // cannot do sample a buffer without a buffer to sample into
+        let exists = self.app_state.map_or(false, |state| {
+            state.sample_buffer1.is_some()
+        });
+        if !exists {
+            return ReturnCode::ENOMEM;
+        }
+
         // start a continuous sample
-        // demand that the first appslice has been set
+        let res = self.adc_buf1.take().map_or(ReturnCode::EBUSY, |buf| {
+            self.adc.sample_continuous(chan, frequency, buf)
+        });
+        if res != ReturnCode::SUCCESS {
+            return res;
+        }
 
-        // run until the appslice is full
-
-        // when done perform callback
-        // type - buffer, channel, buffer pointer
+        // save state for callback
+        self.active.set(true);
+        self.app_state.map(|state| {
+            state.channel = Some(channel);
+        });
 
         ReturnCode::SUCCESS
     }
 
     fn sample_continuous (&self, channel: usize, frequency: u32, appid: AppId) -> ReturnCode {
+
+        panic!("NOPE");
 
         // only one sample at a time
         if self.active.get() {
@@ -143,31 +175,27 @@ impl<'a, A: ADCSingle + ADCContinuous + 'a> ADC<'a, A> {
     }
 }
 
-impl<'a, A: ADCSingle + ADCContinuous + 'a> Client for ADC<'a, A> {
+impl<'a, A: hil::adc::ADCSingle + hil::adc::ADCContinuous + 'a> hil::adc::Client for ADC<'a, A> {
     fn sample_done(&self, sample: u16) {
-        panic!("Got a sample: {}", sample);
-        /*
-        self.channel.get().map(|cur_channel| {
-            self.channel.set(None);
-            self.app.each(|app| if app.channel == Some(cur_channel) {
-                app.channel = None;
-                app.callback.map(|mut cb| cb.schedule(0, cur_channel as usize, sample as usize));
-            } else if app.channel.is_some() {
-                self.channel.set(app.channel);
+        self.active.set(false);
+
+        self.app_state.map(|state| {
+            state.callback.map(|mut callback| {
+                let channel = state.channel.unwrap_or(0);
+                callback.schedule(CallbackType::SingleSample as usize, channel, sample as usize);
             });
         });
-        self.channel.get().map(|next_channel| { self.adc.sample(next_channel); });
-        */
     }
 
     fn buffer_ready(&self, buf: &'static mut [u16], length: usize) {
+        panic!("not yet {:?}", buf);
         //debug!("Got {} bytes of data: \n{:?}", length, buf);
         //self.adc.continue_sampling(buf);
 
     }
 }
 
-impl<'a, A: ADCSingle + ADCContinuous + 'a> Driver for ADC<'a, A> {
+impl<'a, A: hil::adc::ADCSingle + hil::adc::ADCContinuous + 'a> Driver for ADC<'a, A> {
     fn allow(&self, _appid: AppId, allow_num: usize, slice: AppSlice<Shared, u8>) -> ReturnCode {
         match allow_num {
             // Pass buffer for samples to go into

@@ -4,7 +4,7 @@
 #include "adc.h"
 
 struct adc_data {
-  int reading;
+  uint16_t reading;
   bool fired;
 };
 
@@ -24,26 +24,23 @@ int adc_set_callback(subscribe_cb callback, void* callback_args) {
     return subscribe(DRIVER_NUM_ADC, 0, callback, callback_args);
 }
 
-int adc_initialize(void) {
-    return command(DRIVER_NUM_ADC, 1, 0);
-}
-
-int adc_single_sample(uint8_t channel) {
-    return command(DRIVER_NUM_ADC, 2, channel);
-}
-
-int adc_read_single_sample(uint8_t channel) {
+uint16_t adc_single_sample(uint8_t channel) {
   int err;
 
   result.fired = false;
   err = adc_set_callback(adc_cb, (void*) &result);
-  if (err < 0) return err;
+  if (err < 0) {
+    return err;
+  }
 
-  err = adc_single_sample(channel);
-  if (err < 0) return err;
+  err = command(DRIVER_NUM_ADC, 1, channel);
+  if (err < 0) {
+    return err;
+  }
 
   // Wait for the ADC callback.
   yield_for(&result.fired);
 
   return result.reading;
 }
+

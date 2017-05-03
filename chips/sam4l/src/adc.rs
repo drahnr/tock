@@ -73,9 +73,6 @@ impl ADCChannel {
     }
 }
 
-/// These SAM4L channels fulfill the HIL ADC channel trait. No functions need to be implemented.
-impl hil::adc::ADCChannel for ADCChannel{}
-
 /// Statically allocated ADC channels. Used in board configurations to specify which channels are
 /// used on the platform.
 pub static mut CHANNEL_AD0 : ADCChannel  = ADCChannel::new(Channel::AD0);
@@ -193,6 +190,8 @@ impl ADC {
         // sequencer end of conversion (sample complete)
         if status & 0x01 == 0x01 {
             if self.enabled.get() && self.active.get() && !self.continuous.get() {
+                self.active.set(false);
+
                 // single sample complete. Send value to client
                 let val = (regs.lcv.get() & 0xffff) as u16;
                 self.client.get().map(|client| {
@@ -333,7 +332,6 @@ impl hil::adc::ADCSingle for ADC {
 
 /// Implements an ADC capable of continuous sampling
 impl hil::adc::ADCContinuous for ADC {
-    type Channel = ADCChannel;
 
     /// Capture samples from the ADC continuously at a given frequency until buffer is full,
     /// calling the client when complete.

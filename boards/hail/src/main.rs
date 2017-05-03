@@ -329,14 +329,14 @@ pub unsafe fn reset_handler() {
 
     // Setup ADC
     let adc_channels = static_init!(
-        [&'static hil::adc::ADCChannel; 1],
+        [&'static sam4l::adc::ADCChannel; 1],
         [&sam4l::adc::CHANNEL_AD0],
-        64/8
+        32/8
     );
     let adc = static_init!(
         capsules::adc::ADC<'static, sam4l::adc::ADC>,
-        capsules::adc::ADC::new(&mut sam4l::adc::ADC0, adc_channels),
-        576/8);
+        capsules::adc::ADC::new(&mut sam4l::adc::ADC0, adc_channels, &mut capsules::adc::ADC_BUFFER1, &mut capsules::adc::ADC_BUFFER2),
+        704/8);
     sam4l::adc::ADC0.set_client(adc);
 
     // Setup RNG

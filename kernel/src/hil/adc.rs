@@ -10,14 +10,9 @@ pub trait Client {
     fn buffer_ready(&self, buf: &'static mut [u16], length: usize);
 }
 
-/// Trait representing a channel on the ADC.
-/// No functions needed. The chip driver will know how to handle this.
-pub trait ADCChannel {
-}
-
 /// Simple interface for reading a single ADC sample on any channel.
 pub trait ADCSingle {
-    type Channel: ADCChannel;
+    type Channel;
 
     /// Initialize must be called before taking a sample.
     /// Returns true on success.
@@ -29,8 +24,8 @@ pub trait ADCSingle {
 }
 
 /// Interface for continuously sampling at a given frequency on a channel.
-pub trait ADCContinuous {
-    type Channel: ADCChannel;
+/// Requires the ADCSingle interface to have been implemented as well.
+pub trait ADCContinuous : ADCSingle {
 
     /// Start sampling continuously.
     /// Samples are collected into the given buffer.
