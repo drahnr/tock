@@ -82,7 +82,7 @@ struct Hail {
     ninedof: &'static capsules::ninedof::NineDof<'static>,
     spi: &'static capsules::spi::Spi<'static, VirtualSpiMasterDevice<'static, sam4l::spi::Spi>>,
     nrf51822: &'static Nrf51822Serialization<'static, usart::USART>,
-    adc: &'static capsules::adc::ADC<'static, sam4l::adc::Adc>,
+    adc: &'static capsules::adc::ADC<'static, sam4l::adc::ADC>,
     led: &'static capsules::led::LED<'static, sam4l::gpio::GPIOPin>,
     button: &'static capsules::button::Button<'static, sam4l::gpio::GPIOPin>,
     rng: &'static capsules::rng::SimpleRng<'static, sam4l::trng::Trng<'static>>,
@@ -328,11 +328,16 @@ pub unsafe fn reset_handler() {
     }
 
     // Setup ADC
+    let adc_channels = static_init!(
+        [&'static hil::adc::ADCChannel; 1],
+        [&sam4l::adc::CHANNEL_AD0],
+        64/8
+    );
     let adc = static_init!(
-        capsules::adc::ADC<'static, sam4l::adc::Adc>,
-        capsules::adc::ADC::new(&mut sam4l::adc::ADC, kernel::Container::create()),
-        96/8);
-    sam4l::adc::ADC.set_client(adc);
+        capsules::adc::ADC<'static, sam4l::adc::ADC>,
+        capsules::adc::ADC::new(&mut sam4l::adc::ADC0, adc_channels),
+        576/8);
+    sam4l::adc::ADC0.set_client(adc);
 
     // Setup RNG
     let rng = static_init!(
@@ -402,12 +407,6 @@ pub unsafe fn reset_handler() {
 
     let mut chip = sam4l::chip::Sam4l::new();
     chip.mpu().enable_mpu();
-
-    //XXX ADC debugging
-    use kernel::hil::adc::AdcSingle;
-    use kernel::hil::adc::AdcContinuous;
-    adc::ADC.initialize();
-    adc::ADC.sample_continuous(3, 44100, &sam4l::adc::TEST_BUFFER, &sam4l::gpio::PB[15]);
 
     // Uncomment to measure overheads for TakeCell and MapCell:
     // test_take_map_cell::test_take_map_cell();
