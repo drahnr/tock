@@ -192,6 +192,9 @@ impl ADC {
             if self.enabled.get() && self.active.get() && !self.continuous.get() {
                 self.active.set(false);
 
+                // disable interrupt
+                regs.idr.set(1);
+
                 // single sample complete. Send value to client
                 let val = (regs.lcv.get() & 0xffff) as u16;
                 self.client.get().map(|client| {
