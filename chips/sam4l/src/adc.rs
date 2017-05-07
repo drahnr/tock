@@ -343,7 +343,8 @@ impl hil::adc::ADCContinuous for ADC {
     /// channel - the ADC channel to sample
     /// frequency - frequency to sample at
     /// buf - buffer to fill with samples
-    fn sample_continuous(&self, channel: &Self::Channel, frequency: u32, buf: &'static mut [u16]) -> ReturnCode {
+    /// length - number of samples to collect (up to buffer length)
+    fn sample_continuous(&self, channel: &Self::Channel, frequency: u32, buf: &'static mut [u16], length: usize) -> ReturnCode {
         let regs: &mut ADCRegisters = unsafe { mem::transmute(self.registers) };
 
         if !self.enabled.get() {
@@ -385,8 +386,8 @@ impl hil::adc::ADCContinuous for ADC {
             // clear any current status
             regs.scr.set(0x2F);
 
-            // only want to receive original buffer's worth of data
-            let dma_len = buf.len();
+            // receive up to the buffer's length samples
+            let dma_len = cmp::min(buf.len(), length);
 
             // change buffer into a [u8]
             // this is unsafe but acceptable for the following reasons
@@ -417,7 +418,8 @@ impl hil::adc::ADCContinuous for ADC {
     /// Provide a new buffer to send on-going continuous samples to.
     /// This is expected to be called after the `buffer_ready` callback.
     /// buf - buffer to fill with samples
-    fn continue_sampling(&self, buf: &'static mut [u16]) -> ReturnCode {
+    /// length - number of samples to collect (up to buffer length)
+    fn continue_sampling(&self, buf: &'static mut [u16], length: usize) -> ReturnCode {
         if !self.enabled.get() {
             ReturnCode::EOFF
 
@@ -436,8 +438,8 @@ impl hil::adc::ADCContinuous for ADC {
         } else {
             // give a new buffer to the DMA and start it
 
-            // only want to receive original buffer's worth of data
-            let dma_len = buf.len();
+            // receive up to the buffer's length samples
+            let dma_len = cmp::min(buf.len(), length);
 
             // change buffer into a [u8]
             // this is unsafe but acceptable for the following reasons
@@ -540,10 +542,13 @@ impl dma::DMAClient for ADC {
                 dma_buf
             });
 
+            // get length
+            let length = self.rx_len.get();
+            self.rx_len.set(0);
+
             // alert client
             self.client.get().map(|client| {
                 dma_buffer.map(|dma_buf| {
-                    let length = self.rx_len.get();
 
                     // change buffer back into a [u16]
                     // the buffer was originally a [u16] so this should be okay
@@ -555,7 +560,6 @@ impl dma::DMAClient for ADC {
                     client.buffer_ready(buf, length);
                 });
             });
-            self.rx_len.set(0);
         }
     }
 }

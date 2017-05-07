@@ -85,6 +85,10 @@ int adc_continuous_sample(uint8_t channel, uint32_t frequency) {
   return command(DRIVER_NUM_ADC, 3, chan_freq);
 }
 
+int adc_stop_sampling(void) {
+  return command(DRIVER_NUM_ADC, 4, 0);
+}
+
 int adc_sample_sync(uint8_t channel, uint16_t* sample) {
   int err;
   adc_data_t result = {0};
@@ -92,10 +96,10 @@ int adc_sample_sync(uint8_t channel, uint16_t* sample) {
   result.error = SUCCESS;
 
   err = adc_set_callback(adc_cb, (void*) &result);
-  if (err < 0) return err;
+  if (err < SUCCESS) return err;
 
   err = adc_single_sample(channel);
-  if (err < 0) return err;
+  if (err < SUCCESS) return err;
 
   // wait for callback
   yield_for(&result.fired);
@@ -113,13 +117,13 @@ int adc_sample_buffer_sync(uint8_t channel, uint32_t frequency, uint16_t* buffer
   result.error = SUCCESS;
 
   err = adc_set_callback(adc_cb, (void*) &result);
-  if (err < 0) return err;
+  if (err < SUCCESS) return err;
 
   err = adc_set_buffer(buffer, *length);
-  if (err < 0) return err;
+  if (err < SUCCESS) return err;
 
   err = adc_multiple_sample(channel, frequency);
-  if (err < 0) return err;
+  if (err < SUCCESS) return err;
 
   // wait for callback
   yield_for(&result.fired);

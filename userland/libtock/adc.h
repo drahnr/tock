@@ -25,6 +25,7 @@ int adc_channel_count(void);
 int adc_single_sample(uint8_t channel);
 int adc_multiple_sample(uint8_t channel, uint32_t frequency);
 int adc_continuous_sample(uint8_t channel, uint32_t frequency);
+int adc_stop_sampling(void);
 
 // synchronous calls
 int adc_sample_sync(uint8_t channel, uint16_t* sample);

@@ -5,8 +5,9 @@ pub trait Client {
     /// Called when a sample is ready. Used for single sampling
     fn sample_done(&self, sample: u16);
 
-    /// Called when the buffer is full. Used for continuous sampling
-    /// Expects an additional call to either continue sampling or stop
+    /// Called when the buffer is full. Used for continuous sampling.
+    /// The length provided will always be less than or equal to the length of the buffer.
+    /// Expects an additional call to either continue or stop sampling
     fn buffer_ready(&self, buf: &'static mut [u16], length: usize);
 }
 
@@ -29,12 +30,12 @@ pub trait ADCContinuous : ADCSingle {
 
     /// Start sampling continuously.
     /// Samples are collected into the given buffer.
-    fn sample_continuous(&self, channel: &Self::Channel, frequency: u32, buf: &'static mut [u16]) -> ReturnCode;
+    fn sample_continuous(&self, channel: &Self::Channel, frequency: u32, buf: &'static mut [u16], length: usize) -> ReturnCode;
 
     /// Continue previous `sample_continuous` configuration with a new buffer.
     /// Expected to be called after a `buffer_ready` callback.
     /// Note that if this is not called quickly enough, it is possible to drop samples.
-    fn continue_sampling(&self, buf: &'static mut [u16]) -> ReturnCode;
+    fn continue_sampling(&self, buf: &'static mut [u16], length: usize) -> ReturnCode;
 
     /// Stop continuous sampling.
     /// Can be called at any time to cancel sampling, triggering a `buffer_ready` callback.

@@ -9,14 +9,15 @@
 #include <adc.h>
 
 // Sample the first channel. On Hail, this is external pin A0 (AD0)
-#define CHANNEL 0
+#define ADC_CHANNEL 0
 
+// List of frequencies to sample at
 const uint32_t FREQS[10] = {25, 100, 500, 1000, 5000, 10000, 44100, 100000, 150000, 175000};
 
 static void test_single_samples(void) {
   uint16_t sample;
 
-  int err = adc_sample_sync(CHANNEL, &sample);
+  int err = adc_sample_sync(ADC_CHANNEL, &sample);
   if (err < 0) {
     printf("Error sampling ADC: %d\n", err);
 
@@ -29,15 +30,16 @@ static void test_single_samples(void) {
 }
 
 static void test_sampling_buffer(int index) {
-  uint16_t buf[16] = {0};
   uint32_t length = 16;
+  uint16_t buf[length];
+  memset(buf, 0, length);
 
-  int err = adc_sample_buffer_sync(CHANNEL, FREQS[index], buf, &length);
+  printf("%lu ADC samples at %lu Hz\n", length, FREQS[index]);
+  int err = adc_sample_buffer_sync(ADC_CHANNEL, FREQS[index], buf, &length);
   if (err < 0) {
     printf("Error sampling ADC: %d\n", err);
 
   } else {
-    printf("%lu ADC samples at %lu Hz\n", length, FREQS[index]);
     printf("\t[ ");
     for (uint32_t i=0; i<length; i++) {
       // convert to millivolts
@@ -74,3 +76,4 @@ int main(void) {
 
   return 0;
 }
+
