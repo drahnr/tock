@@ -1,3 +1,4 @@
+// driver for collecting analog samples
 #pragma once
 
 #include <stdint.h>
@@ -10,26 +11,87 @@ extern "C" {
 
 #define DRIVER_NUM_ADC 7
 
+// mode of the ADC
+// Used to tell which operation a callback corresponds to
 typedef enum {
   SingleSample = 0,
   MultipleSample = 1,
   ContinuousSample = 2,
 } ADCMode_t;
 
-// system call interface
+// ***** System Call Interface *****
+
+// set the function called by the ADC when operations are complete
+// See `adc_cb` in adc.c for callback documentation
+//
+// callback - pointer to function to be called
+// callback_args - pointer to data provided to the callback
 int adc_set_callback(subscribe_cb callback, void* callback_args);
-int adc_set_buffer(uint16_t* buffer, uint32_t len);
-int adc_set_double_buffer(uint16_t* buffer, uint32_t len);
+
+// provides an application buffer to the ADC driver to fill with samples
+//
+// buffer - pointer to buffer to fill with samples
+// length - number of samples requested, must be less than or equal to buffer
+//          length
+int adc_set_buffer(uint16_t* buffer, uint32_t length);
+
+// provide an application buffer to fill with samples when continuously
+// sampling
+//
+// buffer - pointer to buffer to fill with samples
+// length - number of samples requested, must be less than or equal to buffer
+//          length
+int adc_set_double_buffer(uint16_t* buffer, uint32_t length);
+
+// query whether the ADC driver is present
 bool adc_is_present(void);
+
+// query how many channels are available in the ADC driver
 int adc_channel_count(void);
+
+// request a single analog sample
+//
+// channel - number of the channel to be sampled
 int adc_single_sample(uint8_t channel);
+
+// request a buffer full of samples from the ADC
+//
+// channel - number of the channel to be sampled
+// frequency - rate in samples per second to collect data at
 int adc_multiple_sample(uint8_t channel, uint32_t frequency);
+
+// request continuous ADC sampling
+// Alternates between the two provided application buffers
+//
+// channel - number of the channel to be sampled
+// frequency - rate in samples per second to collect data at
 int adc_continuous_sample(uint8_t channel, uint32_t frequency);
+
+// cancel an outstanding ADC operation
+// No callback will occur from the prior ADC operation. The ADC may not be
+// immediately ready to use again if a single sample was canceled. Usually used
+// to stop a continuous sampling operation
 int adc_stop_sampling(void);
 
-// synchronous calls
+
+// ***** Synchronous Calls *****
+
+// request a single analog sample
+// Wrapper providing a synchronous interface around the raw ADC system calls
+//
+// channel - number of the channel to be sampled
+// sample - pointer to a uint16_t in which the sample will be stored
 int adc_sample_sync(uint8_t channel, uint16_t* sample);
-int adc_sample_buffer_sync(uint8_t channel, uint32_t frequency, uint16_t* buffer, uint32_t* length);
+
+// request a buffer full of analog samples
+// Wrapper providing a synchronous interface around the raw ADC system calls
+//
+// channel - number of the channel to be sampled
+// frequency - rate in samples per second to collect data at
+// buffer - pointer to buffer to be filled with samples
+// length - number of samples requested, must be less than or equal to buffer
+//          length
+int adc_sample_buffer_sync(uint8_t channel, uint32_t frequency, uint16_t* buffer, uint32_t length);
 
 #ifdef __cplusplus
 }

@@ -12,7 +12,8 @@
 #define ADC_CHANNEL 0
 
 // List of frequencies to sample at
-const uint32_t FREQS[10] = {25, 100, 500, 1000, 5000, 10000, 44100, 100000, 150000, 175000};
+const uint32_t FREQS[10] =
+    {25, 100, 500, 1000, 5000, 10000, 44100, 100000, 150000, 175000};
 
 static void test_single_samples(void) {
   uint16_t sample;
@@ -35,7 +36,7 @@ static void test_sampling_buffer(int index) {
   memset(buf, 0, length);
 
   printf("%lu ADC samples at %lu Hz\n", length, FREQS[index]);
-  int err = adc_sample_buffer_sync(ADC_CHANNEL, FREQS[index], buf, &length);
+  int err = adc_sample_buffer_sync(ADC_CHANNEL, FREQS[index], buf, length);
   if (err < 0) {
     printf("Error sampling ADC: %d\n", err);
 

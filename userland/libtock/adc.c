@@ -1,9 +1,21 @@
+// ADC interface
+
 #include <stdint.h>
 #include <stdio.h>
 
 #include "tock.h"
 #include "adc.h"
 
+// used for creating synchronous versions of functions
+//
+// fired - set when the callback has been called
+// channel - channel that the collected sample corresponds to
+// sample - collected sample value, valid if single sample operation
+// length - number of collected sample values, valid if multiple sample
+//          operation
+// buffer - pointer to buffer filled with samples, valid if multiple sample
+//          operation
+// error - set to FAIL if an invalid callback type is detected
 typedef struct {
   bool fired;
   uint8_t channel;
@@ -13,12 +25,30 @@ typedef struct {
   int error;
 } adc_data_t;
 
+// Internal callback for creating synchronous functions
+//
+// callback_type - number indicating which type of callback occurred
+// arg1, arg2 - meaning varies based on callback_type
+// callback_args - user data passed into the set_callback function
+//
+// Possible callbacks
+// SingleSample: single sample operation is complete
+//      arg1 - channel number that collected sample corresponds to
+//      arg2 - sample value
+// MultipleSample: sampling a buffer worth of data is complete
+//      arg1 - channel in lower 8 bits,
+//             number of samples collected in upper 24 bits
+//      arg2 - pointer to buffer filled with samples
+// ContinuousSample: a buffer of sample data is ready
+//      arg1 - channel in lower 8 bits,
+//             number of samples collected in upper 24 bits
+//      arg2 - pointer to buffer filled with samples
 static void adc_cb(int callback_type,
                    int arg1,
                    int arg2,
-                   void* userdata) {
+                   void* callback_args) {
 
-  adc_data_t* result = (adc_data_t*)userdata;
+  adc_data_t* result = (adc_data_t*)callback_args;
 
   switch (callback_type) {
     case SingleSample:
@@ -110,7 +140,7 @@ int adc_sample_sync(uint8_t channel, uint16_t* sample) {
   return result.error;
 }
 
-int adc_sample_buffer_sync(uint8_t channel, uint32_t frequency, uint16_t* buffer, uint32_t* length) {
+int adc_sample_buffer_sync(uint8_t channel, uint32_t frequency, uint16_t* buffer, uint32_t length) {
   int err;
   adc_data_t result = {0};
   result.fired = false;
@@ -119,7 +149,7 @@ int adc_sample_buffer_sync(uint8_t channel, uint32_t frequency, uint16_t* buffer
   err = adc_set_callback(adc_cb, (void*) &result);
   if (err < SUCCESS) return err;
 
-  err = adc_set_buffer(buffer, *length);
+  err = adc_set_buffer(buffer, length);
   if (err < SUCCESS) return err;
 
   err = adc_multiple_sample(channel, frequency);
@@ -132,7 +162,6 @@ int adc_sample_buffer_sync(uint8_t channel, uint32_t frequency, uint16_t* buffer
   if (result.buffer != buffer) {
     return FAIL;
   }
-  *length = result.length;
 
   return result.error;
 }

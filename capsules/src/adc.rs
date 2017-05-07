@@ -9,6 +9,8 @@ use kernel::{AppId, AppSlice, Callback, Driver, ReturnCode, Shared};
 use kernel::common::take_cell::{MapCell, TakeCell};
 use kernel::hil;
 
+/// ADC application driver, used by applications to interact with ADC.
+/// Not currently virtualized, only one application can use it at a time.
 pub struct ADC<'a, A: hil::adc::ADCSingle + hil::adc::ADCContinuous + 'a> {
     // ADC driver
     adc: &'a A,
@@ -31,6 +33,8 @@ pub struct ADC<'a, A: hil::adc::ADCSingle + hil::adc::ADCContinuous + 'a> {
     using_adc_buf1: Cell<bool>,
 }
 
+/// ADC modes, used to track internal state and to signify to applications which state a callback
+/// came from
 #[derive(Copy,Clone,PartialEq)]
 enum ADCMode {
     NoMode = -1,
@@ -39,6 +43,7 @@ enum ADCMode {
     ContinuousSample = 2,
 }
 
+/// Holds buffers that the application has passed us
 pub struct AppState {
     app_buf1: Option<AppSlice<Shared, u8>>,
     app_buf2: Option<AppSlice<Shared, u8>>,
@@ -50,7 +55,15 @@ pub struct AppState {
 pub static mut ADC_BUFFER1: [u16; 128] = [0; 128];
 pub static mut ADC_BUFFER2: [u16; 128] = [0; 128];
 
+/// Functions to create, initialize, and interact with the ADC
 impl<'a, A: hil::adc::ADCSingle + hil::adc::ADCContinuous + 'a> ADC<'a, A> {
+
+    /// Create a new ADC application interface
+    ///
+    /// adc - ADC driver to provide application access to
+    /// channels - list of ADC channels usable by applications
+    /// adc_buf1 - buffer used to hold ADC samples
+    /// adc_buf2 - second buffer used when continuously sampling ADC
     pub fn new(adc: &'a A, channels: &'a [&'a <A as hil::adc::ADCSingle>::Channel], adc_buf1: &'static mut [u16; 128], adc_buf2: &'static mut [u16; 128]) -> ADC<'a, A> {
         ADC {
             // ADC driver
@@ -78,10 +91,15 @@ impl<'a, A: hil::adc::ADCSingle + hil::adc::ADCContinuous + 'a> ADC<'a, A> {
         }
     }
 
+    /// Initialize the ADC
+    /// This can be called harmlessly if the ADC has already been initialized
     fn initialize(&self) -> ReturnCode {
         self.adc.initialize()
     }
 
+    /// Collect a single analog sample on a channel
+    ///
+    /// channel - index into `channels` array, which channel to sample
     fn sample(&self, channel: usize) -> ReturnCode {
 
         // only one sample at a time
@@ -120,6 +138,12 @@ impl<'a, A: hil::adc::ADCSingle + hil::adc::ADCContinuous + 'a> ADC<'a, A> {
         ReturnCode::SUCCESS
     }
 
+    /// Collect a buffer-full of analog samples
+    /// Samples are collected into the first app buffer provided. The number of samples collected
+    /// is equal to the size of the buffer "allowed"
+    ///
+    /// channel - index into `channels` array, which channel to sample
+    /// frequency - number of samples per second to collect
     fn sample_buffer (&self, channel: usize, frequency: u32) -> ReturnCode {
 
         // only one sample at a time
@@ -175,6 +199,12 @@ impl<'a, A: hil::adc::ADCSingle + hil::adc::ADCContinuous + 'a> ADC<'a, A> {
         ReturnCode::SUCCESS
     }
 
+    /// Collect analog samples continuously
+    /// Fills one "allowed" application buffer at a time and then swaps to filling the second
+    /// buffer. Callbacks occur when the in use "allowed" buffer fills
+    ///
+    /// channel - index into `channels` array, which channel to sample
+    /// frequency - number of samples per second to collect
     fn sample_continuous (&self, channel: usize, frequency: u32) -> ReturnCode {
 
         // only one sample at a time
@@ -230,15 +260,21 @@ impl<'a, A: hil::adc::ADCSingle + hil::adc::ADCContinuous + 'a> ADC<'a, A> {
         ReturnCode::SUCCESS
     }
 
+    /// Stops sampling the ADC
+    /// Any active operation by the ADC is canceled and no callback will be triggered. The ADC may
+    /// not be immediately ready to use afterwards, however, as single samples cannot actually be
+    /// canceled. This is primarily for use in stopping a continuous sampling operation.
     fn stop_sampling (&self) -> ReturnCode {
         if !self.active.get() || self.mode.get() == ADCMode::NoMode {
             // already inactive!
             return ReturnCode::SUCCESS;
         }
 
+        // we're going to leave active as true here, but set ourselves to NoMode so the client
+        // handler functions will clean up state properly when the ADC is ready again
+
         if self.mode.get() == ADCMode::SingleSample {
             // set state for callback
-            self.active.set(false);
             self.mode.set(ADCMode::NoMode);
             self.app_buf_offset.set(0);
 
@@ -247,7 +283,6 @@ impl<'a, A: hil::adc::ADCSingle + hil::adc::ADCContinuous + 'a> ADC<'a, A> {
         } else {
 
             // set state for callback
-            self.active.set(false);
             self.mode.set(ADCMode::NoMode);
             self.app_buf_offset.set(0);
 
@@ -257,13 +292,21 @@ impl<'a, A: hil::adc::ADCSingle + hil::adc::ADCContinuous + 'a> ADC<'a, A> {
     }
 }
 
+/// Callbacks from the ADC driver
 impl<'a, A: hil::adc::ADCSingle + hil::adc::ADCContinuous + 'a> hil::adc::Client for ADC<'a, A> {
+
+    /// Single sample operation complete
+    /// Collects the sample and provides a callback to the application
+    ///
+    /// sample - analog sample value
     fn sample_done(&self, sample: u16) {
         if self.active.get() && self.mode.get() == ADCMode::SingleSample {
+            // single sample complete, clean up state
             self.active.set(false);
             self.mode.set(ADCMode::NoMode);
             self.app_buf_offset.set(0);
 
+            // perform callback
             self.callback.get().map(|mut callback| {
                 callback.schedule(ADCMode::SingleSample as usize, self.channel.get(), sample as usize);
             });
@@ -275,6 +318,15 @@ impl<'a, A: hil::adc::ADCSingle + hil::adc::ADCContinuous + 'a> hil::adc::Client
         }
     }
 
+    /// Internal buffer has filled from a continuous or multiple sample operation
+    /// Copies data over to application buffer, determines if more data is needed, and performs a
+    /// callback to the application if ready. If continuously sampling, also swaps application
+    /// buffers and continues sampling when neccessary. If only filling a single buffer, stops
+    /// sampling operation when the application buffer is full.
+    ///
+    /// buf - internal buffer filled with analog samples
+    /// length - number of valid samples in the buffer, guaranteed to be less than or equal to
+    ///          buffer length
     fn buffer_ready(&self, buf: &'static mut [u16], length: usize) {
 
         // determine which adc buffer is which
@@ -357,7 +409,7 @@ impl<'a, A: hil::adc::ADCSingle + hil::adc::ADCContinuous + 'a> hil::adc::Client
                             self.adc.stop_sampling();
 
                         } else {
-                            // we need to start another sample!
+                            // we need to start another sampling operation!
                             self.app_buf_offset.set(0);
                             self.using_app_buf1.set(!self.using_app_buf1.get());
 
@@ -390,21 +442,30 @@ impl<'a, A: hil::adc::ADCSingle + hil::adc::ADCContinuous + 'a> hil::adc::Client
 
                         // perform callback
                         self.callback.get().map(|mut callback| {
-                            let len_chan = (app_buf.len()/2 << 8) | (self.channel.get() & 0xFF);
+                            let len_chan = ((app_buf.len()/2) << 8) | (self.channel.get() & 0xFF);
                             callback.schedule(prev_mode as usize, len_chan, app_buf.ptr() as usize);
                         });
                     }
                 });
             });
+
         } else {
             // operation was likely canceled. Make sure state is consistent. No callback
             self.active.set(false);
             self.mode.set(ADCMode::NoMode);
+            self.app_buf_offset.set(0);
         }
     }
 }
 
+/// Implementations of application syscalls
 impl<'a, A: hil::adc::ADCSingle + hil::adc::ADCContinuous + 'a> Driver for ADC<'a, A> {
+
+    /// Provides access to a buffer from the application to store data in or read data from
+    ///
+    /// _appid - application identifier, unused
+    /// allow_num - which allow call this is
+    /// slice - representation of application memory to copy data into
     fn allow(&self, _appid: AppId, allow_num: usize, slice: AppSlice<Shared, u8>) -> ReturnCode {
         match allow_num {
             // Pass buffer for samples to go into
@@ -432,6 +493,10 @@ impl<'a, A: hil::adc::ADCSingle + hil::adc::ADCContinuous + 'a> Driver for ADC<'
         }
     }
 
+    /// Provides a callback which can be used to signal the application
+    ///
+    /// subscribe_num - which subscribe call this is
+    /// callback - callback object which can be scheduled to signal the application
     fn subscribe(&self, subscribe_num: usize, callback: Callback) -> ReturnCode {
         match subscribe_num {
             // subscribe to ADC sample done (from all types of sampling)
@@ -446,6 +511,11 @@ impl<'a, A: hil::adc::ADCSingle + hil::adc::ADCContinuous + 'a> Driver for ADC<'
         }
     }
 
+    /// Method for the application to command or query this driver
+    ///
+    /// command_num - which command call this is
+    /// data - value sent by the application, varying uses
+    /// _appid - application identifier, unused
     fn command(&self, command_num: usize, data: usize, _appid: AppId) -> ReturnCode {
         match command_num {
             // check if present
@@ -483,3 +553,4 @@ impl<'a, A: hil::adc::ADCSingle + hil::adc::ADCContinuous + 'a> Driver for ADC<'
         }
     }
 }
+
