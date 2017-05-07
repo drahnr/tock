@@ -329,9 +329,15 @@ pub unsafe fn reset_handler() {
 
     // Setup ADC
     let adc_channels = static_init!(
-        [&'static sam4l::adc::ADCChannel; 1],
-        [&sam4l::adc::CHANNEL_AD0],
-        32/8
+        [&'static sam4l::adc::ADCChannel; 6],
+        [&sam4l::adc::CHANNEL_AD0, // A0
+         &sam4l::adc::CHANNEL_AD1, // A1
+         &sam4l::adc::CHANNEL_AD3, // A2
+         &sam4l::adc::CHANNEL_AD4, // A3
+         &sam4l::adc::CHANNEL_AD5, // A4
+         &sam4l::adc::CHANNEL_AD6, // A5
+        ],
+        192/8
     );
     let adc = static_init!(
         capsules::adc::ADC<'static, sam4l::adc::ADC>,
