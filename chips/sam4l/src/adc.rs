@@ -19,6 +19,7 @@ use core::cell::Cell;
 use core::cmp;
 use core::mem;
 use core::slice;
+use dma;
 use kernel::common::math;
 use kernel::common::volatile_cell::VolatileCell;
 use kernel::hil;
@@ -26,7 +27,6 @@ use kernel::returncode::ReturnCode;
 use nvic;
 use pm::{self, Clock, PBAClock};
 use scif;
-use dma;
 
 /// Representation of an ADC channel on the SAM4L.
 pub struct ADCChannel {
@@ -38,16 +38,16 @@ pub struct ADCChannel {
 #[derive(Copy,Clone)]
 #[repr(u8)]
 enum Channel {
-    AD0  = 0x00,
-    AD1  = 0x01,
-    AD2  = 0x02,
-    AD3  = 0x03,
-    AD4  = 0x04,
-    AD5  = 0x05,
-    AD6  = 0x06,
-    AD7  = 0x07,
-    AD8  = 0x08,
-    AD9  = 0x09,
+    AD0 = 0x00,
+    AD1 = 0x01,
+    AD2 = 0x02,
+    AD3 = 0x03,
+    AD4 = 0x04,
+    AD5 = 0x05,
+    AD6 = 0x06,
+    AD7 = 0x07,
+    AD8 = 0x08,
+    AD9 = 0x09,
     AD10 = 0x0A,
     AD11 = 0x0B,
     AD12 = 0x0C,
@@ -62,7 +62,6 @@ enum Channel {
 
 /// Initialization of an ADC channel.
 impl ADCChannel {
-
     /// Create a new ADC channel.
     /// channel - Channel enum representing the channel number and whether it is internal
     const fn new(channel: Channel) -> ADCChannel {
@@ -75,26 +74,26 @@ impl ADCChannel {
 
 /// Statically allocated ADC channels. Used in board configurations to specify which channels are
 /// used on the platform.
-pub static mut CHANNEL_AD0 : ADCChannel  = ADCChannel::new(Channel::AD0);
-pub static mut CHANNEL_AD1 : ADCChannel  = ADCChannel::new(Channel::AD1);
-pub static mut CHANNEL_AD2 : ADCChannel  = ADCChannel::new(Channel::AD2);
-pub static mut CHANNEL_AD3 : ADCChannel  = ADCChannel::new(Channel::AD3);
-pub static mut CHANNEL_AD4 : ADCChannel  = ADCChannel::new(Channel::AD4);
-pub static mut CHANNEL_AD5 : ADCChannel  = ADCChannel::new(Channel::AD5);
-pub static mut CHANNEL_AD6 : ADCChannel  = ADCChannel::new(Channel::AD6);
-pub static mut CHANNEL_AD7 : ADCChannel  = ADCChannel::new(Channel::AD7);
-pub static mut CHANNEL_AD8 : ADCChannel  = ADCChannel::new(Channel::AD8);
-pub static mut CHANNEL_AD9 : ADCChannel  = ADCChannel::new(Channel::AD9);
-pub static mut CHANNEL_AD10 : ADCChannel = ADCChannel::new(Channel::AD10);
-pub static mut CHANNEL_AD11 : ADCChannel = ADCChannel::new(Channel::AD11);
-pub static mut CHANNEL_AD12 : ADCChannel = ADCChannel::new(Channel::AD12);
-pub static mut CHANNEL_AD13 : ADCChannel = ADCChannel::new(Channel::AD13);
-pub static mut CHANNEL_AD14 : ADCChannel = ADCChannel::new(Channel::AD14);
-pub static mut CHANNEL_BANDGAP : ADCChannel          = ADCChannel::new(Channel::Bandgap);
-pub static mut CHANNEL_SCALED_VCC : ADCChannel       = ADCChannel::new(Channel::ScaledVCC);
-pub static mut CHANNEL_DAC : ADCChannel              = ADCChannel::new(Channel::DAC);
-pub static mut CHANNEL_VSINGLE : ADCChannel          = ADCChannel::new(Channel::Vsingle);
-pub static mut CHANNEL_REFERENCE_GROUND : ADCChannel = ADCChannel::new(Channel::ReferenceGround);
+pub static mut CHANNEL_AD0: ADCChannel = ADCChannel::new(Channel::AD0);
+pub static mut CHANNEL_AD1: ADCChannel = ADCChannel::new(Channel::AD1);
+pub static mut CHANNEL_AD2: ADCChannel = ADCChannel::new(Channel::AD2);
+pub static mut CHANNEL_AD3: ADCChannel = ADCChannel::new(Channel::AD3);
+pub static mut CHANNEL_AD4: ADCChannel = ADCChannel::new(Channel::AD4);
+pub static mut CHANNEL_AD5: ADCChannel = ADCChannel::new(Channel::AD5);
+pub static mut CHANNEL_AD6: ADCChannel = ADCChannel::new(Channel::AD6);
+pub static mut CHANNEL_AD7: ADCChannel = ADCChannel::new(Channel::AD7);
+pub static mut CHANNEL_AD8: ADCChannel = ADCChannel::new(Channel::AD8);
+pub static mut CHANNEL_AD9: ADCChannel = ADCChannel::new(Channel::AD9);
+pub static mut CHANNEL_AD10: ADCChannel = ADCChannel::new(Channel::AD10);
+pub static mut CHANNEL_AD11: ADCChannel = ADCChannel::new(Channel::AD11);
+pub static mut CHANNEL_AD12: ADCChannel = ADCChannel::new(Channel::AD12);
+pub static mut CHANNEL_AD13: ADCChannel = ADCChannel::new(Channel::AD13);
+pub static mut CHANNEL_AD14: ADCChannel = ADCChannel::new(Channel::AD14);
+pub static mut CHANNEL_BANDGAP: ADCChannel = ADCChannel::new(Channel::Bandgap);
+pub static mut CHANNEL_SCALED_VCC: ADCChannel = ADCChannel::new(Channel::ScaledVCC);
+pub static mut CHANNEL_DAC: ADCChannel = ADCChannel::new(Channel::DAC);
+pub static mut CHANNEL_VSINGLE: ADCChannel = ADCChannel::new(Channel::Vsingle);
+pub static mut CHANNEL_REFERENCE_GROUND: ADCChannel = ADCChannel::new(Channel::ReferenceGround);
 
 
 /// ADC driver code for the SAM4L.
@@ -137,14 +136,14 @@ pub struct ADCRegisters {
     pub version: VolatileCell<u32>, // Version          (0x40)
     pub parameter: VolatileCell<u32>, // Parameter      (0x44)
 }
-pub const BASE_ADDRESS: *mut ADCRegisters = 0x40038000 as *mut ADCRegisters; // Page 59 of SAM4L data sheet
+// Page 59 of SAM4L data sheet
+pub const BASE_ADDRESS: *mut ADCRegisters = 0x40038000 as *mut ADCRegisters;
 
 /// Statically allocated ADC driver. Used in board configurations to connect to various capsules.
 pub static mut ADC0: ADC = ADC::new(BASE_ADDRESS, dma::DMAPeripheral::ADCIFE_RX);
 
 /// Functions for initializing the ADC.
 impl ADC {
-
     /// Create a new ADC driver.
     /// base_address - pointer to the ADC's memory mapped I/O registers
     /// rx_dma_peripheral - type used for DMA transactions
@@ -197,9 +196,7 @@ impl ADC {
 
                 // single sample complete. Send value to client
                 let val = (regs.lcv.get() & 0xffff) as u16;
-                self.client.get().map(|client| {
-                    client.sample_done(val);
-                });
+                self.client.get().map(|client| { client.sample_done(val); });
             }
 
             // clear status
@@ -244,14 +241,14 @@ impl hil::adc::ADCSingle for ADC {
                 let divisor = (cpu_frequency + (1500000 - 1)) / 1500000; // ceiling of division
                 clock_divisor = math::log_base_two(math::closest_power_of_two(divisor)) - 2;
                 clock_divisor = cmp::min(cmp::max(clock_divisor, 0), 7); // keep in bounds
-                self.adc_clk_freq.set(cpu_frequency / (1 << (clock_divisor+2)));
+                self.adc_clk_freq.set(cpu_frequency / (1 << (clock_divisor + 2)));
             }
 
             // configure the ADC
             let cfg_val = (clock_divisor << 8) | // PRESCAL: clock divider
                           (0x1 << 6) | // CLKSEL: use ADCIFE clock
                           (0x0 << 4) | // SPEED: maximum 300 ksps
-                          (0x4 << 1);  // REFSEL: VCC/2 reference
+                          (0x4 << 1); // REFSEL: VCC/2 reference
             regs.cfg.set(cfg_val);
 
             // software reset (does not clear registers)
@@ -273,7 +270,7 @@ impl hil::adc::ADCSingle for ADC {
             // enable Bandgap buffer and Reference buffer. I don't actually
             // know what these do, but you need to turn them on
             let cr_val = (0x1 << 10) | // BGREQEN: Enable bandgap buffer request
-                         (0x1 <<  4);  // REFBUFEN: Enable reference buffer
+                         (0x1 <<  4); // REFBUFEN: Enable reference buffer
             regs.cr.set(cr_val);
 
             // wait until buffers are enabled
@@ -316,7 +313,7 @@ impl hil::adc::ADCSingle for ADC {
                       (0x0 <<  7) | // GCOMP: no gain compensation
                       (0x7 <<  4) | // GAIN: 0.5x gain
                       (0x0 <<  2) | // BIPOLAR: unipolar mode
-                      (0x0 <<  0);  // HWLA: right justify value
+                      (0x0 <<  0); // HWLA: right justify value
             regs.seqcfg.set(cfg);
 
             // clear any current status
@@ -335,7 +332,6 @@ impl hil::adc::ADCSingle for ADC {
 
 /// Implements an ADC capable of continuous sampling
 impl hil::adc::ADCContinuous for ADC {
-
     /// Capture samples from the ADC continuously at a given frequency until buffer is full,
     /// calling the client when complete.
     /// Note that due to hardware constraints the maximum frequency range of the ADC is from
@@ -344,7 +340,12 @@ impl hil::adc::ADCContinuous for ADC {
     /// frequency - frequency to sample at
     /// buf - buffer to fill with samples
     /// length - number of samples to collect (up to buffer length)
-    fn sample_continuous(&self, channel: &Self::Channel, frequency: u32, buf: &'static mut [u16], length: usize) -> ReturnCode {
+    fn sample_continuous(&self,
+                         channel: &Self::Channel,
+                         frequency: u32,
+                         buf: &'static mut [u16],
+                         length: usize)
+                         -> ReturnCode {
         let regs: &mut ADCRegisters = unsafe { mem::transmute(self.registers) };
 
         if !self.enabled.get() {
@@ -371,7 +372,7 @@ impl hil::adc::ADCContinuous for ADC {
                       (0x0 <<  7) | // GCOMP: no gain compensation
                       (0x7 <<  4) | // GAIN: 0.5x gain
                       (0x0 <<  2) | // BIPOLAR: unipolar mode
-                      (0x0 <<  0);  // HWLA: right justify value
+                      (0x0 <<  0); // HWLA: right justify value
             regs.seqcfg.set(cfg);
 
             // stop timer if running
@@ -397,8 +398,8 @@ impl hil::adc::ADCContinuous for ADC {
             //    make sure we don't go past dma_buf.len()/width
             //  * we will transmute the array back to a [u16] after the DMA
             //    transfer is complete
-            let dma_buf_ptr = unsafe{ mem::transmute::<*mut u16, *mut u8>(buf.as_mut_ptr()) };
-            let dma_buf = unsafe { slice::from_raw_parts_mut(dma_buf_ptr, buf.len()*2) };
+            let dma_buf_ptr = unsafe { mem::transmute::<*mut u16, *mut u8>(buf.as_mut_ptr()) };
+            let dma_buf = unsafe { slice::from_raw_parts_mut(dma_buf_ptr, buf.len() * 2) };
 
             // set up the DMA
             self.rx_dma.get().map(move |dma| {
@@ -449,8 +450,8 @@ impl hil::adc::ADCContinuous for ADC {
             //    make sure we don't go past dma_buf.len()/width
             //  * we will transmute the array back to a [u16] after the DMA
             //    transfer is complete
-            let dma_buf_ptr = unsafe{ mem::transmute::<*mut u16, *mut u8>(buf.as_mut_ptr()) };
-            let dma_buf = unsafe { slice::from_raw_parts_mut(dma_buf_ptr, buf.len()*2) };
+            let dma_buf_ptr = unsafe { mem::transmute::<*mut u16, *mut u8>(buf.as_mut_ptr()) };
+            let dma_buf = unsafe { slice::from_raw_parts_mut(dma_buf_ptr, buf.len() * 2) };
 
             // set up the DMA
             self.rx_dma.get().map(move |dma| {
@@ -509,8 +510,9 @@ impl hil::adc::ADCContinuous for ADC {
 
                     // change buffer back into a [u16]
                     // the buffer was originally a [u16] so this should be okay
-                    let buf_ptr = unsafe{ mem::transmute::<*mut u8, *mut u16>(dma_buf.as_mut_ptr()) };
-                    let buf = unsafe { slice::from_raw_parts_mut(buf_ptr, dma_buf.len()/2) };
+                    let buf_ptr =
+                        unsafe { mem::transmute::<*mut u8, *mut u16>(dma_buf.as_mut_ptr()) };
+                    let buf = unsafe { slice::from_raw_parts_mut(buf_ptr, dma_buf.len() / 2) };
 
                     // pass the buffer up to the next layer. It will then either send down another
                     // buffer to continue sampling, or stop sampling
@@ -526,7 +528,6 @@ impl hil::adc::ADCContinuous for ADC {
 
 /// Implements a client of a DMA.
 impl dma::DMAClient for ADC {
-
     /// Handler for DMA transfer completion.
     /// pid - the DMA peripheral that is complete
     fn xfer_done(&self, pid: dma::DMAPeripheral) {
@@ -552,8 +553,9 @@ impl dma::DMAClient for ADC {
 
                     // change buffer back into a [u16]
                     // the buffer was originally a [u16] so this should be okay
-                    let buf_ptr = unsafe{ mem::transmute::<*mut u8, *mut u16>(dma_buf.as_mut_ptr()) };
-                    let buf = unsafe { slice::from_raw_parts_mut(buf_ptr, dma_buf.len()/2) };
+                    let buf_ptr =
+                        unsafe { mem::transmute::<*mut u8, *mut u16>(dma_buf.as_mut_ptr()) };
+                    let buf = unsafe { slice::from_raw_parts_mut(buf_ptr, dma_buf.len() / 2) };
 
                     // pass the buffer up to the next layer. It will then either send down another
                     // buffer to continue sampling, or stop sampling

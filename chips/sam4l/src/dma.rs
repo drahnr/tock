@@ -231,14 +231,14 @@ impl DMAChannel {
             }
             DMAWidth::Width16Bit => {
                 // DMA is acting on halfwords
-                if len > buf.len()/2 {
-                    len = buf.len()/2
+                if len > buf.len() / 2 {
+                    len = buf.len() / 2
                 }
             }
             DMAWidth::Width32Bit => {
                 // DMA is acting on words
-                if len > buf.len()/4 {
-                    len = buf.len()/4
+                if len > buf.len() / 4 {
+                    len = buf.len() / 4
                 }
             }
         }

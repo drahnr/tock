@@ -57,14 +57,14 @@ pub static mut ADC_BUFFER2: [u16; 128] = [0; 128];
 
 /// Functions to create, initialize, and interact with the ADC
 impl<'a, A: hil::adc::ADCSingle + hil::adc::ADCContinuous + 'a> ADC<'a, A> {
-
     /// Create a new ADC application interface
     ///
     /// adc - ADC driver to provide application access to
     /// channels - list of ADC channels usable by applications
     /// adc_buf1 - buffer used to hold ADC samples
     /// adc_buf2 - second buffer used when continuously sampling ADC
-    pub fn new(adc: &'a A, channels: &'a [&'a <A as hil::adc::ADCSingle>::Channel], adc_buf1: &'static mut [u16; 128], adc_buf2: &'static mut [u16; 128]) -> ADC<'a, A> {
+    pub fn new(adc: &'a A, channels: &'a [&'a <A as hil::adc::ADCSingle>::Channel],
+               adc_buf1: &'static mut [u16; 128], adc_buf2: &'static mut [u16; 128]) -> ADC<'a, A> {
         ADC {
             // ADC driver
             adc: adc,
@@ -144,7 +144,7 @@ impl<'a, A: hil::adc::ADCSingle + hil::adc::ADCContinuous + 'a> ADC<'a, A> {
     ///
     /// channel - index into `channels` array, which channel to sample
     /// frequency - number of samples per second to collect
-    fn sample_buffer (&self, channel: usize, frequency: u32) -> ReturnCode {
+    fn sample_buffer(&self, channel: usize, frequency: u32) -> ReturnCode {
 
         // only one sample at a time
         if self.active.get() {
@@ -182,7 +182,7 @@ impl<'a, A: hil::adc::ADCSingle + hil::adc::ADCContinuous + 'a> ADC<'a, A> {
         // start a continuous sample
         let res = self.adc_buf1.take().map_or(ReturnCode::EBUSY, |buf| {
             // determine request length
-            let req_len = cmp::min(app_buf_length/2, buf.len());
+            let req_len = cmp::min(app_buf_length / 2, buf.len());
 
             self.using_app_buf1.set(true);
             self.using_adc_buf1.set(true);
@@ -205,7 +205,7 @@ impl<'a, A: hil::adc::ADCSingle + hil::adc::ADCContinuous + 'a> ADC<'a, A> {
     ///
     /// channel - index into `channels` array, which channel to sample
     /// frequency - number of samples per second to collect
-    fn sample_continuous (&self, channel: usize, frequency: u32) -> ReturnCode {
+    fn sample_continuous(&self, channel: usize, frequency: u32) -> ReturnCode {
 
         // only one sample at a time
         if self.active.get() {
@@ -243,7 +243,7 @@ impl<'a, A: hil::adc::ADCSingle + hil::adc::ADCContinuous + 'a> ADC<'a, A> {
         // start a continuous sample
         let res = self.adc_buf1.take().map_or(ReturnCode::EBUSY, |buf| {
             // determine request length
-            let req_len = cmp::min(app_buf_length/2, buf.len());
+            let req_len = cmp::min(app_buf_length / 2, buf.len());
 
             self.using_app_buf1.set(true);
             self.using_adc_buf1.set(true);
@@ -264,7 +264,7 @@ impl<'a, A: hil::adc::ADCSingle + hil::adc::ADCContinuous + 'a> ADC<'a, A> {
     /// Any active operation by the ADC is canceled and no callback will be triggered. The ADC may
     /// not be immediately ready to use afterwards, however, as single samples cannot actually be
     /// canceled. This is primarily for use in stopping a continuous sampling operation.
-    fn stop_sampling (&self) -> ReturnCode {
+    fn stop_sampling(&self) -> ReturnCode {
         if !self.active.get() || self.mode.get() == ADCMode::NoMode {
             // already inactive!
             return ReturnCode::SUCCESS;
@@ -294,7 +294,6 @@ impl<'a, A: hil::adc::ADCSingle + hil::adc::ADCContinuous + 'a> ADC<'a, A> {
 
 /// Callbacks from the ADC driver
 impl<'a, A: hil::adc::ADCSingle + hil::adc::ADCContinuous + 'a> hil::adc::Client for ADC<'a, A> {
-
     /// Single sample operation complete
     /// Collects the sample and provides a callback to the application
     ///
@@ -308,7 +307,9 @@ impl<'a, A: hil::adc::ADCSingle + hil::adc::ADCContinuous + 'a> hil::adc::Client
 
             // perform callback
             self.callback.get().map(|mut callback| {
-                callback.schedule(ADCMode::SingleSample as usize, self.channel.get(), sample as usize);
+                callback.schedule(ADCMode::SingleSample as usize,
+                                  self.channel.get(),
+                                  sample as usize);
             });
         } else {
             // operation probably canceled. Make sure state is consistent. No callback
@@ -344,7 +345,9 @@ impl<'a, A: hil::adc::ADCSingle + hil::adc::ADCContinuous + 'a> hil::adc::Client
         curr_adc_buf.replace(buf);
 
         // is this an expected buffer?
-        if self.active.get() && (self.mode.get() == ADCMode::MultipleSample || self.mode.get() == ADCMode::ContinuousSample) {
+        if self.active.get() &&
+           (self.mode.get() == ADCMode::MultipleSample ||
+            self.mode.get() == ADCMode::ContinuousSample) {
             self.app_state.map(|state| {
 
                 // determine which app buffer we should use
@@ -361,14 +364,14 @@ impl<'a, A: hil::adc::ADCSingle + hil::adc::ADCContinuous + 'a> hil::adc::Client
                 app_buf.map(move |app_buf| {
 
                     // check if we have received enough samples
-                    let samples_remaining = (app_buf.len()-self.app_buf_offset.get())/2;
+                    let samples_remaining = (app_buf.len() - self.app_buf_offset.get()) / 2;
                     if length < samples_remaining {
                         // we need to receive more samples
 
                         // continue transfer with next buffer
                         next_adc_buf.take().map(|adc_buf| {
                             self.using_adc_buf1.set(!self.using_adc_buf1.get());
-                            self.adc.continue_sampling(adc_buf, samples_remaining-length);
+                            self.adc.continue_sampling(adc_buf, samples_remaining - length);
                         });
 
                         // copy bytes to app buffer
@@ -380,18 +383,20 @@ impl<'a, A: hil::adc::ADCSingle + hil::adc::ADCContinuous + 'a> hil::adc::Client
                         //  * `take`: limits us to the minimum of buffer lengths or sample length
                         // We then split each sample into its two bytes and copy them to the app
                         // buffer
-                        curr_adc_buf.map(|adc_buf| {
-                            for (chunk, &sample) in app_buf.chunks_mut(2).skip(self.app_buf_offset.get()/2).zip(adc_buf.iter()).take(length) {
-                                let mut val = sample;
-                                for byte in chunk.iter_mut() {
-                                    *byte = (val & 0xFF) as u8;
-                                    val = val >> 8;
-                                }
+                        curr_adc_buf.map(|adc_buf| for (chunk, &sample) in app_buf.chunks_mut(2)
+                            .skip(self.app_buf_offset.get() / 2)
+                            .zip(adc_buf.iter())
+                            .take(length) {
+
+                            let mut val = sample;
+                            for byte in chunk.iter_mut() {
+                                *byte = (val & 0xFF) as u8;
+                                val = val >> 8;
                             }
                         });
 
                         // update our offset based on how many samples we copied
-                        self.app_buf_offset.set(self.app_buf_offset.get() + length*2);
+                        self.app_buf_offset.set(self.app_buf_offset.get() + length * 2);
 
                     } else {
                         // we have received the full app buffer
@@ -417,7 +422,7 @@ impl<'a, A: hil::adc::ADCSingle + hil::adc::ADCContinuous + 'a> hil::adc::Client
                             next_adc_buf.take().map(|adc_buf| {
                                 self.using_adc_buf1.set(!self.using_adc_buf1.get());
                                 let next_buf_len = next_app_buf.map_or(0, |buf| buf.len());
-                                self.adc.continue_sampling(adc_buf, next_buf_len/2);
+                                self.adc.continue_sampling(adc_buf, next_buf_len / 2);
                             });
                         }
 
@@ -430,19 +435,21 @@ impl<'a, A: hil::adc::ADCSingle + hil::adc::ADCContinuous + 'a> hil::adc::Client
                         //  * `take`: limits us to the minimum of buffer lengths or sample length
                         // We then split each sample into its two bytes and copy them to the app
                         // buffer
-                        curr_adc_buf.map(|adc_buf| {
-                            for (chunk, &sample) in app_buf.chunks_mut(2).skip(prev_app_buf_offset/2).zip(adc_buf.iter()).take(length) {
-                                let mut val = sample;
-                                for byte in chunk.iter_mut() {
-                                    *byte = (val & 0xFF) as u8;
-                                    val = val >> 8;
-                                }
+                        curr_adc_buf.map(|adc_buf| for (chunk, &sample) in app_buf.chunks_mut(2)
+                            .skip(prev_app_buf_offset / 2)
+                            .zip(adc_buf.iter())
+                            .take(length) {
+
+                            let mut val = sample;
+                            for byte in chunk.iter_mut() {
+                                *byte = (val & 0xFF) as u8;
+                                val = val >> 8;
                             }
                         });
 
                         // perform callback
                         self.callback.get().map(|mut callback| {
-                            let len_chan = ((app_buf.len()/2) << 8) | (self.channel.get() & 0xFF);
+                            let len_chan = ((app_buf.len() / 2) << 8) | (self.channel.get() & 0xFF);
                             callback.schedule(prev_mode as usize, len_chan, app_buf.ptr() as usize);
                         });
                     }
@@ -460,7 +467,6 @@ impl<'a, A: hil::adc::ADCSingle + hil::adc::ADCContinuous + 'a> hil::adc::Client
 
 /// Implementations of application syscalls
 impl<'a, A: hil::adc::ADCSingle + hil::adc::ADCContinuous + 'a> Driver for ADC<'a, A> {
-
     /// Provides access to a buffer from the application to store data in or read data from
     ///
     /// _appid - application identifier, unused
@@ -471,9 +477,7 @@ impl<'a, A: hil::adc::ADCSingle + hil::adc::ADCContinuous + 'a> Driver for ADC<'
             // Pass buffer for samples to go into
             0 => {
                 // set first buffer
-                self.app_state.map(|state| {
-                    state.app_buf1 = Some(slice);
-                });
+                self.app_state.map(|state| { state.app_buf1 = Some(slice); });
 
                 ReturnCode::SUCCESS
             }
@@ -481,9 +485,7 @@ impl<'a, A: hil::adc::ADCSingle + hil::adc::ADCContinuous + 'a> Driver for ADC<'
             // Pass a second buffer to be used for double-buffered continuous sampling
             1 => {
                 // set second buffer
-                self.app_state.map(|state| {
-                    state.app_buf2 = Some(slice);
-                });
+                self.app_state.map(|state| { state.app_buf2 = Some(slice); });
 
                 ReturnCode::SUCCESS
             }
@@ -519,38 +521,33 @@ impl<'a, A: hil::adc::ADCSingle + hil::adc::ADCContinuous + 'a> Driver for ADC<'
     fn command(&self, command_num: usize, data: usize, _appid: AppId) -> ReturnCode {
         match command_num {
             // check if present
-            0 => {
-                ReturnCode::SuccessWithValue { value: self.channels.len() as usize }
-            },
+            0 => ReturnCode::SuccessWithValue { value: self.channels.len() as usize },
 
             // Single sample on channel
             1 => {
                 let channel = (data & 0xFF) as usize;
                 self.sample(channel)
-            },
+            }
 
             // Multiple sample on a channel
             2 => {
                 let channel = (data & 0xFF) as usize;
                 let frequency = (data >> 8) as u32;
                 self.sample_buffer(channel, frequency)
-            },
+            }
 
             // Continuous sample on a channel
             3 => {
                 let channel = (data & 0xFF) as usize;
                 let frequency = (data >> 8) as u32;
                 self.sample_continuous(channel, frequency)
-            },
+            }
 
             // Stop sampling
-            4 => {
-                self.stop_sampling()
-            },
+            4 => self.stop_sampling(),
 
             // default
             _ => ReturnCode::ENOSUPPORT,
         }
     }
 }
-

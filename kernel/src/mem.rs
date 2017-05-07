@@ -69,9 +69,7 @@ impl<L, T> AppSlice<L, T> {
     }
 
     pub fn ptr(&self) -> *const T {
-        unsafe {
-            self.ptr.ptr.as_ref() as *const T
-        }
+        unsafe { self.ptr.ptr.as_ref() as *const T }
     }
 
     pub unsafe fn expose_to(&self, appid: AppId) -> bool {

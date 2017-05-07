@@ -26,11 +26,15 @@ pub trait ADCSingle {
 
 /// Interface for continuously sampling at a given frequency on a channel.
 /// Requires the ADCSingle interface to have been implemented as well.
-pub trait ADCContinuous : ADCSingle {
-
+pub trait ADCContinuous: ADCSingle {
     /// Start sampling continuously.
     /// Samples are collected into the given buffer.
-    fn sample_continuous(&self, channel: &Self::Channel, frequency: u32, buf: &'static mut [u16], length: usize) -> ReturnCode;
+    fn sample_continuous(&self,
+                         channel: &Self::Channel,
+                         frequency: u32,
+                         buf: &'static mut [u16],
+                         length: usize)
+                         -> ReturnCode;
 
     /// Continue previous `sample_continuous` configuration with a new buffer.
     /// Expected to be called after a `buffer_ready` callback.
