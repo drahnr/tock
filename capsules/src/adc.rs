@@ -11,14 +11,14 @@ use kernel::hil;
 
 /// ADC application driver, used by applications to interact with ADC.
 /// Not currently virtualized, only one application can use it at a time.
-pub struct ADC<'a, A: hil::adc::ADCSingle + hil::adc::ADCContinuous + 'a> {
+pub struct Adc<'a, A: hil::adc::AdcSingle + hil::adc::AdcContinuous + 'a> {
     // ADC driver
     adc: &'a A,
-    channels: &'a [&'a <A as hil::adc::ADCSingle>::Channel],
+    channels: &'a [&'a <A as hil::adc::AdcSingle>::Channel],
 
     // ADC state
     active: Cell<bool>,
-    mode: Cell<ADCMode>,
+    mode: Cell<AdcMode>,
 
     // App state
     app_state: MapCell<AppState>,
@@ -36,7 +36,7 @@ pub struct ADC<'a, A: hil::adc::ADCSingle + hil::adc::ADCContinuous + 'a> {
 /// ADC modes, used to track internal state and to signify to applications which state a callback
 /// came from
 #[derive(Copy,Clone,PartialEq)]
-enum ADCMode {
+enum AdcMode {
     NoMode = -1,
     SingleSample = 0,
     MultipleSample = 1,
@@ -56,23 +56,23 @@ pub static mut ADC_BUFFER1: [u16; 128] = [0; 128];
 pub static mut ADC_BUFFER2: [u16; 128] = [0; 128];
 
 /// Functions to create, initialize, and interact with the ADC
-impl<'a, A: hil::adc::ADCSingle + hil::adc::ADCContinuous + 'a> ADC<'a, A> {
-    /// Create a new ADC application interface
+impl<'a, A: hil::adc::AdcSingle + hil::adc::AdcContinuous + 'a> Adc<'a, A> {
+    /// Create a new Adc application interface
     ///
     /// adc - ADC driver to provide application access to
     /// channels - list of ADC channels usable by applications
     /// adc_buf1 - buffer used to hold ADC samples
     /// adc_buf2 - second buffer used when continuously sampling ADC
-    pub fn new(adc: &'a A, channels: &'a [&'a <A as hil::adc::ADCSingle>::Channel],
-               adc_buf1: &'static mut [u16; 128], adc_buf2: &'static mut [u16; 128]) -> ADC<'a, A> {
-        ADC {
+    pub fn new(adc: &'a A, channels: &'a [&'a <A as hil::adc::AdcSingle>::Channel],
+               adc_buf1: &'static mut [u16; 128], adc_buf2: &'static mut [u16; 128]) -> Adc<'a, A> {
+        Adc {
             // ADC driver
             adc: adc,
             channels: channels,
 
             // ADC state
             active: Cell::new(false),
-            mode: Cell::new(ADCMode::NoMode),
+            mode: Cell::new(AdcMode::NoMode),
 
             // App state
             app_state: MapCell::new(AppState {
@@ -121,7 +121,7 @@ impl<'a, A: hil::adc::ADCSingle + hil::adc::ADCContinuous + 'a> ADC<'a, A> {
 
         // save state for callback
         self.active.set(true);
-        self.mode.set(ADCMode::SingleSample);
+        self.mode.set(AdcMode::SingleSample);
         self.app_buf_offset.set(0);
         self.channel.set(channel);
 
@@ -130,7 +130,7 @@ impl<'a, A: hil::adc::ADCSingle + hil::adc::ADCContinuous + 'a> ADC<'a, A> {
         if res != ReturnCode::SUCCESS {
             // failure, clear state
             self.active.set(false);
-            self.mode.set(ADCMode::NoMode);
+            self.mode.set(AdcMode::NoMode);
 
             return res;
         }
@@ -175,7 +175,7 @@ impl<'a, A: hil::adc::ADCSingle + hil::adc::ADCContinuous + 'a> ADC<'a, A> {
 
         // save state for callback
         self.active.set(true);
-        self.mode.set(ADCMode::MultipleSample);
+        self.mode.set(AdcMode::MultipleSample);
         self.app_buf_offset.set(0);
         self.channel.set(channel);
 
@@ -191,7 +191,7 @@ impl<'a, A: hil::adc::ADCSingle + hil::adc::ADCContinuous + 'a> ADC<'a, A> {
         if res != ReturnCode::SUCCESS {
             // failure, clear state
             self.active.set(false);
-            self.mode.set(ADCMode::NoMode);
+            self.mode.set(AdcMode::NoMode);
 
             return res;
         }
@@ -236,7 +236,7 @@ impl<'a, A: hil::adc::ADCSingle + hil::adc::ADCContinuous + 'a> ADC<'a, A> {
 
         // save state for callback
         self.active.set(true);
-        self.mode.set(ADCMode::ContinuousSample);
+        self.mode.set(AdcMode::ContinuousSample);
         self.app_buf_offset.set(0);
         self.channel.set(channel);
 
@@ -252,7 +252,7 @@ impl<'a, A: hil::adc::ADCSingle + hil::adc::ADCContinuous + 'a> ADC<'a, A> {
         if res != ReturnCode::SUCCESS {
             // failure, clear state
             self.active.set(false);
-            self.mode.set(ADCMode::NoMode);
+            self.mode.set(AdcMode::NoMode);
 
             return res;
         }
@@ -265,7 +265,7 @@ impl<'a, A: hil::adc::ADCSingle + hil::adc::ADCContinuous + 'a> ADC<'a, A> {
     /// not be immediately ready to use afterwards, however, as single samples cannot actually be
     /// canceled. This is primarily for use in stopping a continuous sampling operation.
     fn stop_sampling(&self) -> ReturnCode {
-        if !self.active.get() || self.mode.get() == ADCMode::NoMode {
+        if !self.active.get() || self.mode.get() == AdcMode::NoMode {
             // already inactive!
             return ReturnCode::SUCCESS;
         }
@@ -273,9 +273,9 @@ impl<'a, A: hil::adc::ADCSingle + hil::adc::ADCContinuous + 'a> ADC<'a, A> {
         // we're going to leave active as true here, but set ourselves to NoMode so the client
         // handler functions will clean up state properly when the ADC is ready again
 
-        if self.mode.get() == ADCMode::SingleSample {
+        if self.mode.get() == AdcMode::SingleSample {
             // set state for callback
-            self.mode.set(ADCMode::NoMode);
+            self.mode.set(AdcMode::NoMode);
             self.app_buf_offset.set(0);
 
             // cannot cancel the single sample, but we'll just not send a callback
@@ -283,7 +283,7 @@ impl<'a, A: hil::adc::ADCSingle + hil::adc::ADCContinuous + 'a> ADC<'a, A> {
         } else {
 
             // set state for callback
-            self.mode.set(ADCMode::NoMode);
+            self.mode.set(AdcMode::NoMode);
             self.app_buf_offset.set(0);
 
             // actually cancel the operation
@@ -293,28 +293,28 @@ impl<'a, A: hil::adc::ADCSingle + hil::adc::ADCContinuous + 'a> ADC<'a, A> {
 }
 
 /// Callbacks from the ADC driver
-impl<'a, A: hil::adc::ADCSingle + hil::adc::ADCContinuous + 'a> hil::adc::Client for ADC<'a, A> {
+impl<'a, A: hil::adc::AdcSingle + hil::adc::AdcContinuous + 'a> hil::adc::Client for Adc<'a, A> {
     /// Single sample operation complete
     /// Collects the sample and provides a callback to the application
     ///
     /// sample - analog sample value
     fn sample_done(&self, sample: u16) {
-        if self.active.get() && self.mode.get() == ADCMode::SingleSample {
+        if self.active.get() && self.mode.get() == AdcMode::SingleSample {
             // single sample complete, clean up state
             self.active.set(false);
-            self.mode.set(ADCMode::NoMode);
+            self.mode.set(AdcMode::NoMode);
             self.app_buf_offset.set(0);
 
             // perform callback
             self.callback.get().map(|mut callback| {
-                callback.schedule(ADCMode::SingleSample as usize,
+                callback.schedule(AdcMode::SingleSample as usize,
                                   self.channel.get(),
                                   sample as usize);
             });
         } else {
             // operation probably canceled. Make sure state is consistent. No callback
             self.active.set(false);
-            self.mode.set(ADCMode::NoMode);
+            self.mode.set(AdcMode::NoMode);
             self.app_buf_offset.set(0);
         }
     }
@@ -346,8 +346,8 @@ impl<'a, A: hil::adc::ADCSingle + hil::adc::ADCContinuous + 'a> hil::adc::Client
 
         // is this an expected buffer?
         if self.active.get() &&
-           (self.mode.get() == ADCMode::MultipleSample ||
-            self.mode.get() == ADCMode::ContinuousSample) {
+           (self.mode.get() == AdcMode::MultipleSample ||
+            self.mode.get() == AdcMode::ContinuousSample) {
             self.app_state.map(|state| {
 
                 // determine which app buffer we should use
@@ -406,10 +406,10 @@ impl<'a, A: hil::adc::ADCSingle + hil::adc::ADCContinuous + 'a> hil::adc::Client
                         let prev_mode = self.mode.get();
 
                         // do we need to start another transfer?
-                        if self.mode.get() == ADCMode::MultipleSample {
+                        if self.mode.get() == AdcMode::MultipleSample {
                             // we are finished!
                             self.active.set(false);
-                            self.mode.set(ADCMode::NoMode);
+                            self.mode.set(AdcMode::NoMode);
                             self.app_buf_offset.set(0);
                             self.adc.stop_sampling();
 
@@ -459,14 +459,14 @@ impl<'a, A: hil::adc::ADCSingle + hil::adc::ADCContinuous + 'a> hil::adc::Client
         } else {
             // operation was likely canceled. Make sure state is consistent. No callback
             self.active.set(false);
-            self.mode.set(ADCMode::NoMode);
+            self.mode.set(AdcMode::NoMode);
             self.app_buf_offset.set(0);
         }
     }
 }
 
 /// Implementations of application syscalls
-impl<'a, A: hil::adc::ADCSingle + hil::adc::ADCContinuous + 'a> Driver for ADC<'a, A> {
+impl<'a, A: hil::adc::AdcSingle + hil::adc::AdcContinuous + 'a> Driver for Adc<'a, A> {
     /// Provides access to a buffer from the application to store data in or read data from
     ///
     /// _appid - application identifier, unused

@@ -12,7 +12,7 @@ pub trait Client {
 }
 
 /// Simple interface for reading a single ADC sample on any channel.
-pub trait ADCSingle {
+pub trait AdcSingle {
     type Channel;
 
     /// Initialize must be called before taking a sample.
@@ -25,8 +25,8 @@ pub trait ADCSingle {
 }
 
 /// Interface for continuously sampling at a given frequency on a channel.
-/// Requires the ADCSingle interface to have been implemented as well.
-pub trait ADCContinuous: ADCSingle {
+/// Requires the AdcSingle interface to have been implemented as well.
+pub trait AdcContinuous: AdcSingle {
     /// Start sampling continuously.
     /// Samples are collected into the given buffer.
     fn sample_continuous(&self,

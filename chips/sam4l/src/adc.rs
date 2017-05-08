@@ -29,7 +29,7 @@ use pm::{self, Clock, PBAClock};
 use scif;
 
 /// Representation of an ADC channel on the SAM4L.
-pub struct ADCChannel {
+pub struct AdcChannel {
     chan_num: u32,
     internal: u32,
 }
@@ -61,11 +61,11 @@ enum Channel {
 }
 
 /// Initialization of an ADC channel.
-impl ADCChannel {
+impl AdcChannel {
     /// Create a new ADC channel.
     /// channel - Channel enum representing the channel number and whether it is internal
-    const fn new(channel: Channel) -> ADCChannel {
-        ADCChannel {
+    const fn new(channel: Channel) -> AdcChannel {
+        AdcChannel {
             chan_num: ((channel as u8) & 0x0F) as u32,
             internal: (((channel as u8) >> 4) & 0x01) as u32,
         }
@@ -74,31 +74,31 @@ impl ADCChannel {
 
 /// Statically allocated ADC channels. Used in board configurations to specify which channels are
 /// used on the platform.
-pub static mut CHANNEL_AD0: ADCChannel = ADCChannel::new(Channel::AD0);
-pub static mut CHANNEL_AD1: ADCChannel = ADCChannel::new(Channel::AD1);
-pub static mut CHANNEL_AD2: ADCChannel = ADCChannel::new(Channel::AD2);
-pub static mut CHANNEL_AD3: ADCChannel = ADCChannel::new(Channel::AD3);
-pub static mut CHANNEL_AD4: ADCChannel = ADCChannel::new(Channel::AD4);
-pub static mut CHANNEL_AD5: ADCChannel = ADCChannel::new(Channel::AD5);
-pub static mut CHANNEL_AD6: ADCChannel = ADCChannel::new(Channel::AD6);
-pub static mut CHANNEL_AD7: ADCChannel = ADCChannel::new(Channel::AD7);
-pub static mut CHANNEL_AD8: ADCChannel = ADCChannel::new(Channel::AD8);
-pub static mut CHANNEL_AD9: ADCChannel = ADCChannel::new(Channel::AD9);
-pub static mut CHANNEL_AD10: ADCChannel = ADCChannel::new(Channel::AD10);
-pub static mut CHANNEL_AD11: ADCChannel = ADCChannel::new(Channel::AD11);
-pub static mut CHANNEL_AD12: ADCChannel = ADCChannel::new(Channel::AD12);
-pub static mut CHANNEL_AD13: ADCChannel = ADCChannel::new(Channel::AD13);
-pub static mut CHANNEL_AD14: ADCChannel = ADCChannel::new(Channel::AD14);
-pub static mut CHANNEL_BANDGAP: ADCChannel = ADCChannel::new(Channel::Bandgap);
-pub static mut CHANNEL_SCALED_VCC: ADCChannel = ADCChannel::new(Channel::ScaledVCC);
-pub static mut CHANNEL_DAC: ADCChannel = ADCChannel::new(Channel::DAC);
-pub static mut CHANNEL_VSINGLE: ADCChannel = ADCChannel::new(Channel::Vsingle);
-pub static mut CHANNEL_REFERENCE_GROUND: ADCChannel = ADCChannel::new(Channel::ReferenceGround);
+pub static mut CHANNEL_AD0: AdcChannel = AdcChannel::new(Channel::AD0);
+pub static mut CHANNEL_AD1: AdcChannel = AdcChannel::new(Channel::AD1);
+pub static mut CHANNEL_AD2: AdcChannel = AdcChannel::new(Channel::AD2);
+pub static mut CHANNEL_AD3: AdcChannel = AdcChannel::new(Channel::AD3);
+pub static mut CHANNEL_AD4: AdcChannel = AdcChannel::new(Channel::AD4);
+pub static mut CHANNEL_AD5: AdcChannel = AdcChannel::new(Channel::AD5);
+pub static mut CHANNEL_AD6: AdcChannel = AdcChannel::new(Channel::AD6);
+pub static mut CHANNEL_AD7: AdcChannel = AdcChannel::new(Channel::AD7);
+pub static mut CHANNEL_AD8: AdcChannel = AdcChannel::new(Channel::AD8);
+pub static mut CHANNEL_AD9: AdcChannel = AdcChannel::new(Channel::AD9);
+pub static mut CHANNEL_AD10: AdcChannel = AdcChannel::new(Channel::AD10);
+pub static mut CHANNEL_AD11: AdcChannel = AdcChannel::new(Channel::AD11);
+pub static mut CHANNEL_AD12: AdcChannel = AdcChannel::new(Channel::AD12);
+pub static mut CHANNEL_AD13: AdcChannel = AdcChannel::new(Channel::AD13);
+pub static mut CHANNEL_AD14: AdcChannel = AdcChannel::new(Channel::AD14);
+pub static mut CHANNEL_BANDGAP: AdcChannel = AdcChannel::new(Channel::Bandgap);
+pub static mut CHANNEL_SCALED_VCC: AdcChannel = AdcChannel::new(Channel::ScaledVCC);
+pub static mut CHANNEL_DAC: AdcChannel = AdcChannel::new(Channel::DAC);
+pub static mut CHANNEL_VSINGLE: AdcChannel = AdcChannel::new(Channel::Vsingle);
+pub static mut CHANNEL_REFERENCE_GROUND: AdcChannel = AdcChannel::new(Channel::ReferenceGround);
 
 
 /// ADC driver code for the SAM4L.
-pub struct ADC {
-    registers: *mut ADCRegisters,
+pub struct Adc {
+    registers: *mut AdcRegisters,
 
     enabled: Cell<bool>,
     adc_clk_freq: Cell<u32>,
@@ -115,7 +115,7 @@ pub struct ADC {
 
 /// Memory mapped registers for the ADC.
 #[repr(C, packed)]
-pub struct ADCRegisters {
+pub struct AdcRegisters {
     // From page 1005 of SAM4L manual
     pub cr: VolatileCell<u32>, // Control               (0x00)
     pub cfg: VolatileCell<u32>, // Configuration        (0x04)
@@ -137,18 +137,18 @@ pub struct ADCRegisters {
     pub parameter: VolatileCell<u32>, // Parameter      (0x44)
 }
 // Page 59 of SAM4L data sheet
-pub const BASE_ADDRESS: *mut ADCRegisters = 0x40038000 as *mut ADCRegisters;
+pub const BASE_ADDRESS: *mut AdcRegisters = 0x40038000 as *mut AdcRegisters;
 
 /// Statically allocated ADC driver. Used in board configurations to connect to various capsules.
-pub static mut ADC0: ADC = ADC::new(BASE_ADDRESS, dma::DMAPeripheral::ADCIFE_RX);
+pub static mut ADC0: Adc = Adc::new(BASE_ADDRESS, dma::DMAPeripheral::ADCIFE_RX);
 
 /// Functions for initializing the ADC.
-impl ADC {
+impl Adc {
     /// Create a new ADC driver.
     /// base_address - pointer to the ADC's memory mapped I/O registers
     /// rx_dma_peripheral - type used for DMA transactions
-    const fn new(base_address: *mut ADCRegisters, rx_dma_peripheral: dma::DMAPeripheral) -> ADC {
-        ADC {
+    const fn new(base_address: *mut AdcRegisters, rx_dma_peripheral: dma::DMAPeripheral) -> Adc {
+        Adc {
             // pointer to memory mapped I/O registers
             registers: base_address,
 
@@ -183,7 +183,7 @@ impl ADC {
 
     /// Interrupt handler for the ADC.
     pub fn handle_interrupt(&mut self) {
-        let regs: &mut ADCRegisters = unsafe { mem::transmute(self.registers) };
+        let regs: &mut AdcRegisters = unsafe { mem::transmute(self.registers) };
         let status = regs.sr.get();
 
         // sequencer end of conversion (sample complete)
@@ -206,13 +206,13 @@ impl ADC {
 }
 
 /// Implements an ADC capable of single samples.
-impl hil::adc::ADCSingle for ADC {
-    type Channel = ADCChannel;
+impl hil::adc::AdcSingle for Adc {
+    type Channel = AdcChannel;
 
     /// Enable and configure the ADC.
     /// This can be called multiple times with no side effects.
     fn initialize(&self) -> ReturnCode {
-        let regs: &mut ADCRegisters = unsafe { mem::transmute(self.registers) };
+        let regs: &mut AdcRegisters = unsafe { mem::transmute(self.registers) };
 
         if !self.enabled.get() {
             self.enabled.set(true);
@@ -291,7 +291,7 @@ impl hil::adc::ADCSingle for ADC {
     /// Returns an error if the ADC is already sampling.
     /// channel - the ADC channel to sample
     fn sample(&self, channel: &Self::Channel) -> ReturnCode {
-        let regs: &mut ADCRegisters = unsafe { mem::transmute(self.registers) };
+        let regs: &mut AdcRegisters = unsafe { mem::transmute(self.registers) };
 
         if !self.enabled.get() {
             ReturnCode::EOFF
@@ -331,7 +331,7 @@ impl hil::adc::ADCSingle for ADC {
 }
 
 /// Implements an ADC capable of continuous sampling
-impl hil::adc::ADCContinuous for ADC {
+impl hil::adc::AdcContinuous for Adc {
     /// Capture samples from the ADC continuously at a given frequency until buffer is full,
     /// calling the client when complete.
     /// Note that due to hardware constraints the maximum frequency range of the ADC is from
@@ -346,7 +346,7 @@ impl hil::adc::ADCContinuous for ADC {
                          buf: &'static mut [u16],
                          length: usize)
                          -> ReturnCode {
-        let regs: &mut ADCRegisters = unsafe { mem::transmute(self.registers) };
+        let regs: &mut AdcRegisters = unsafe { mem::transmute(self.registers) };
 
         if !self.enabled.get() {
             ReturnCode::EOFF
@@ -470,7 +470,7 @@ impl hil::adc::ADCContinuous for ADC {
     /// time to abort the currently running operation. The buffer, if any, will be returned via the
     /// `buffer_ready` callback.
     fn stop_sampling(&self) -> ReturnCode {
-        let regs: &mut ADCRegisters = unsafe { mem::transmute(self.registers) };
+        let regs: &mut AdcRegisters = unsafe { mem::transmute(self.registers) };
 
         if !self.enabled.get() {
             ReturnCode::EOFF
@@ -527,7 +527,7 @@ impl hil::adc::ADCContinuous for ADC {
 }
 
 /// Implements a client of a DMA.
-impl dma::DMAClient for ADC {
+impl dma::DMAClient for Adc {
     /// Handler for DMA transfer completion.
     /// pid - the DMA peripheral that is complete
     fn xfer_done(&self, pid: dma::DMAPeripheral) {

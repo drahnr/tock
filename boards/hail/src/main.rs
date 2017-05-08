@@ -82,7 +82,7 @@ struct Hail {
     ninedof: &'static capsules::ninedof::NineDof<'static>,
     spi: &'static capsules::spi::Spi<'static, VirtualSpiMasterDevice<'static, sam4l::spi::Spi>>,
     nrf51822: &'static Nrf51822Serialization<'static, usart::USART>,
-    adc: &'static capsules::adc::ADC<'static, sam4l::adc::ADC>,
+    adc: &'static capsules::adc::Adc<'static, sam4l::adc::Adc>,
     led: &'static capsules::led::LED<'static, sam4l::gpio::GPIOPin>,
     button: &'static capsules::button::Button<'static, sam4l::gpio::GPIOPin>,
     rng: &'static capsules::rng::SimpleRng<'static, sam4l::trng::Trng<'static>>,
@@ -329,7 +329,7 @@ pub unsafe fn reset_handler() {
 
     // Setup ADC
     let adc_channels = static_init!(
-        [&'static sam4l::adc::ADCChannel; 6],
+        [&'static sam4l::adc::AdcChannel; 6],
         [&sam4l::adc::CHANNEL_AD0, // A0
          &sam4l::adc::CHANNEL_AD1, // A1
          &sam4l::adc::CHANNEL_AD3, // A2
@@ -340,8 +340,8 @@ pub unsafe fn reset_handler() {
         192/8
     );
     let adc = static_init!(
-        capsules::adc::ADC<'static, sam4l::adc::ADC>,
-        capsules::adc::ADC::new(&mut sam4l::adc::ADC0, adc_channels,
+        capsules::adc::Adc<'static, sam4l::adc::Adc>,
+        capsules::adc::Adc::new(&mut sam4l::adc::ADC0, adc_channels,
                                 &mut capsules::adc::ADC_BUFFER1, &mut capsules::adc::ADC_BUFFER2),
         768/8);
     sam4l::adc::ADC0.set_client(adc);
