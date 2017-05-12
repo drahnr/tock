@@ -21,6 +21,7 @@ use core::mem;
 use core::slice;
 use dma;
 use kernel::common::math;
+use kernel::common::take_cell::TakeCell;
 use kernel::common::volatile_cell::VolatileCell;
 use kernel::hil;
 use kernel::returncode::ReturnCode;
@@ -95,6 +96,9 @@ pub static mut CHANNEL_DAC: AdcChannel = AdcChannel::new(Channel::DAC);
 pub static mut CHANNEL_VSINGLE: AdcChannel = AdcChannel::new(Channel::Vsingle);
 pub static mut CHANNEL_REFERENCE_GROUND: AdcChannel = AdcChannel::new(Channel::ReferenceGround);
 
+/// Create a trait of both client types to allow a single client reference to act as both
+pub trait EverythingClient: hil::adc::Client + hil::adc::HighSpeedClient {}
+impl<C: hil::adc::Client + hil::adc::HighSpeedClient> EverythingClient for C {}
 
 /// ADC driver code for the SAM4L.
 pub struct Adc {
@@ -106,11 +110,14 @@ pub struct Adc {
     continuous: Cell<bool>,
     dma_running: Cell<bool>,
 
+    next_dma_buffer: TakeCell<'static, [u16]>,
+    next_dma_length: Cell<usize>,
+
     rx_dma: Cell<Option<&'static dma::DMAChannel>>,
     rx_dma_peripheral: dma::DMAPeripheral,
-    rx_len: Cell<usize>,
+    rx_length: Cell<usize>,
 
-    client: Cell<Option<&'static hil::adc::Client>>,
+    client: Cell<Option<&'static EverythingClient>>,
 }
 
 /// Memory mapped registers for the ADC.
@@ -145,6 +152,7 @@ pub static mut ADC0: Adc = Adc::new(BASE_ADDRESS, dma::DMAPeripheral::ADCIFE_RX)
 /// Functions for initializing the ADC.
 impl Adc {
     /// Create a new ADC driver.
+    ///
     /// base_address - pointer to the ADC's memory mapped I/O registers
     /// rx_dma_peripheral - type used for DMA transactions
     const fn new(base_address: *mut AdcRegisters, rx_dma_peripheral: dma::DMAPeripheral) -> Adc {
@@ -159,10 +167,13 @@ impl Adc {
             continuous: Cell::new(false),
             dma_running: Cell::new(false),
 
+            next_dma_buffer: TakeCell::empty(),
+            next_dma_length: Cell::new(0),
+
             // DMA status
             rx_dma: Cell::new(None),
             rx_dma_peripheral: rx_dma_peripheral,
-            rx_len: Cell::new(0),
+            rx_length: Cell::new(0),
 
             // higher layer to send responses to
             client: Cell::new(None),
@@ -170,12 +181,14 @@ impl Adc {
     }
 
     /// Sets the client for this driver.
+    ///
     /// client - reference to capsule which handles responses
-    pub fn set_client<C: hil::adc::Client>(&self, client: &'static C) {
+    pub fn set_client<C: EverythingClient>(&self, client: &'static C) {
         self.client.set(Some(client));
     }
 
     /// Sets the DMA channel for this driver.
+    ///
     /// rx_dma - reference to the DMA channel the ADC should use
     pub fn set_dma(&self, rx_dma: &'static dma::DMAChannel) {
         self.rx_dma.set(Some(rx_dma));
@@ -185,6 +198,8 @@ impl Adc {
     pub fn handle_interrupt(&mut self) {
         let regs: &mut AdcRegisters = unsafe { mem::transmute(self.registers) };
         let status = regs.sr.get();
+
+        //XXX: need to update this code
 
         // sequencer end of conversion (sample complete)
         if status & 0x01 == 0x01 {
@@ -196,7 +211,7 @@ impl Adc {
 
                 // single sample complete. Send value to client
                 let val = (regs.lcv.get() & 0xffff) as u16;
-                self.client.get().map(|client| { client.sample_done(val); });
+                self.client.get().map(|client| { client.sample_ready(val); });
             }
 
             // clear status
@@ -205,8 +220,8 @@ impl Adc {
     }
 }
 
-/// Implements an ADC capable of single samples.
-impl hil::adc::AdcSingle for Adc {
+/// Implements an ADC capable reading ADC samples on any channel.
+impl hil::adc::Adc for Adc {
     type Channel = AdcChannel;
 
     /// Enable and configure the ADC.
@@ -289,6 +304,7 @@ impl hil::adc::AdcSingle for Adc {
 
     /// Capture a single analog sample, calling the client when complete.
     /// Returns an error if the ADC is already sampling.
+    ///
     /// channel - the ADC channel to sample
     fn sample(&self, channel: &Self::Channel) -> ReturnCode {
         let regs: &mut AdcRegisters = unsafe { mem::transmute(self.registers) };
@@ -297,7 +313,7 @@ impl hil::adc::AdcSingle for Adc {
             ReturnCode::EOFF
 
         } else if self.active.get() {
-            // only one sample at a time
+            // only one operation at a time
             ReturnCode::EBUSY
 
         } else {
@@ -328,25 +344,112 @@ impl hil::adc::AdcSingle for Adc {
             ReturnCode::SUCCESS
         }
     }
+
+    /// Request repeated analog samples on a particular channel, calling after each sample.
+    ///
+    /// channel - the ADC channel to sample
+    /// frequency - the number of samples per second to collect
+    fn sample_continuous(&self, channel: &Self::Channel, frequency: u32) -> ReturnCode {
+        let regs: &mut AdcRegisters = unsafe { mem::transmute(self.registers) };
+
+        if !self.enabled.get() {
+            ReturnCode::EOFF
+
+        } else if self.active.get() {
+            // only one operation at a time
+            ReturnCode::EBUSY
+
+        } else {
+            //XXX: need to fill this in
+
+            ReturnCode::SUCCESS
+        }
+    }
+
+    /// Stop continuously sampling the ADC.
+    /// This is expected to be called to stop continuous sampling operations, but can be called to
+    /// abort any currently running operation. The buffer, if any, will be returned via the
+    /// `sampling_complete` callback.
+    fn stop_sampling(&self) -> ReturnCode {
+        let regs: &mut AdcRegisters = unsafe { mem::transmute(self.registers) };
+
+        if !self.enabled.get() {
+            ReturnCode::EOFF
+
+        } else if !self.active.get() {
+            // cannot cancel sampling that isn't running
+            ReturnCode::EINVAL
+
+        } else if !self.continuous.get() {
+            // cannot cancel a single sample operation
+            //XXX: really need to figure out how to cancel single samples
+            ReturnCode::EINVAL
+
+        } else {
+            //XXX: needs to be updated
+            // stopping a continuous sample operation
+            self.active.set(false);
+            self.continuous.set(false);
+
+            // stop internal timer
+            regs.cr.set(0x02);
+
+            // stop DMA transfer if going
+            let dma_buffer = self.rx_dma.get().map_or(None, |rx_dma| {
+                self.dma_running.set(false);
+                let dma_buf = rx_dma.abort_xfer();
+                rx_dma.disable();
+                dma_buf
+            });
+
+            // if there was a buffer, send it to the client. It will be
+            // partially invalid if it exists, but they were the ones who
+            // wanted to stop in a hurry. In the common case, this is only
+            // called after a `samples_ready` call, in which case this map will
+            // fizzle
+            self.client.get().map(|client| {
+                dma_buffer.map(|dma_buf| {
+                    let length = self.rx_length.get();
+
+                    // change buffer back into a [u16]
+                    // the buffer was originally a [u16] so this should be okay
+                    let buf_ptr =
+                        unsafe { mem::transmute::<*mut u8, *mut u16>(dma_buf.as_mut_ptr()) };
+                    let buf = unsafe { slice::from_raw_parts_mut(buf_ptr, dma_buf.len() / 2) };
+
+                    // pass the buffer up to the next layer. It will then either send down another
+                    // buffer to continue sampling, or stop sampling
+                    client.samples_ready(buf, length);
+                });
+            });
+            self.rx_length.set(0);
+
+            ReturnCode::SUCCESS
+        }
+    }
 }
 
 /// Implements an ADC capable of continuous sampling
-impl hil::adc::AdcContinuous for Adc {
-    /// Capture samples from the ADC continuously at a given frequency until buffer is full,
-    /// calling the client when complete.
-    /// Note that due to hardware constraints the maximum frequency range of the ADC is from
-    /// 187 kHz to 23 Hz (although its precision is limited at higher frequencies due to aliasing).
+impl hil::adc::AdcHighSpeed for Adc {
+    /// Capture buffered samples from the ADC continuously at a given frequency, calling the client
+    /// whenever a buffer fills up. The client is then expected to either stop sampling or provide
+    /// an additional buffer to sample into. Note that due to hardware constraints the maximum
+    /// frequency range of the ADC is from 187 kHz to 23 Hz (although its precision is limited at
+    /// higher frequencies due to aliasing).
+    ///
     /// channel - the ADC channel to sample
     /// frequency - frequency to sample at
-    /// buf - buffer to fill with samples
-    /// length - number of samples to collect (up to buffer length)
-    fn sample_continuous(&self,
-                         channel: &Self::Channel,
-                         frequency: u32,
-                         buf: &'static mut [u16],
-                         length: usize)
-                         -> ReturnCode {
+    /// buffer1 - first buffer to fill with samples
+    /// length1 - number of samples to collect (up to buffer length)
+    /// buffer2 - second buffer to fill once the first is full
+    /// length2 - number of samples to collect (up to buffer length)
+    fn sample_highspeed(&self,
+                         channel: &Self::Channel, frequency: u32,
+                         buffer1: &'static mut [u16], length1: usize,
+                         buffer2: &'static mut [u16], length2: usize) -> ReturnCode {
         let regs: &mut AdcRegisters = unsafe { mem::transmute(self.registers) };
+
+        //XXX: gotta fix all of this
 
         if !self.enabled.get() {
             ReturnCode::EOFF
@@ -388,7 +491,7 @@ impl hil::adc::AdcContinuous for Adc {
             regs.scr.set(0x2F);
 
             // receive up to the buffer's length samples
-            let dma_len = cmp::min(buf.len(), length);
+            let dma_len = cmp::min(buffer1.len(), length1);
 
             // change buffer into a [u8]
             // this is unsafe but acceptable for the following reasons
@@ -398,14 +501,14 @@ impl hil::adc::AdcContinuous for Adc {
             //    make sure we don't go past dma_buf.len()/width
             //  * we will transmute the array back to a [u16] after the DMA
             //    transfer is complete
-            let dma_buf_ptr = unsafe { mem::transmute::<*mut u16, *mut u8>(buf.as_mut_ptr()) };
-            let dma_buf = unsafe { slice::from_raw_parts_mut(dma_buf_ptr, buf.len() * 2) };
+            let dma_buf_ptr = unsafe { mem::transmute::<*mut u16, *mut u8>(buffer1.as_mut_ptr()) };
+            let dma_buf = unsafe { slice::from_raw_parts_mut(dma_buf_ptr, buffer1.len() * 2) };
 
             // set up the DMA
             self.rx_dma.get().map(move |dma| {
                 self.dma_running.set(true);
                 dma.enable();
-                self.rx_len.set(dma_len);
+                self.rx_length.set(dma_len);
                 dma.do_xfer(self.rx_dma_peripheral, dma_buf, dma_len);
             });
 
@@ -416,11 +519,12 @@ impl hil::adc::AdcContinuous for Adc {
         }
     }
 
-    /// Provide a new buffer to send on-going continuous samples to.
-    /// This is expected to be called after the `buffer_ready` callback.
+    /// Provide a new buffer to send on-going buffered continuous samples to.
+    /// This is expected to be called after the `samples_ready` callback.
+    ///
     /// buf - buffer to fill with samples
     /// length - number of samples to collect (up to buffer length)
-    fn continue_sampling(&self, buf: &'static mut [u16], length: usize) -> ReturnCode {
+    fn provide_buffer(&self, buf: &'static mut [u16], length: usize) -> ReturnCode {
         if !self.enabled.get() {
             ReturnCode::EOFF
 
@@ -457,69 +561,9 @@ impl hil::adc::AdcContinuous for Adc {
             self.rx_dma.get().map(move |dma| {
                 self.dma_running.set(true);
                 dma.enable();
-                self.rx_len.set(dma_len);
+                self.rx_length.set(dma_len);
                 dma.do_xfer(self.rx_dma_peripheral, dma_buf, dma_len);
             });
-
-            ReturnCode::SUCCESS
-        }
-    }
-
-    /// Stop continuously sampling the ADC.
-    /// This is expected to be called after the `buffer_ready` callback, but can be called at any
-    /// time to abort the currently running operation. The buffer, if any, will be returned via the
-    /// `buffer_ready` callback.
-    fn stop_sampling(&self) -> ReturnCode {
-        let regs: &mut AdcRegisters = unsafe { mem::transmute(self.registers) };
-
-        if !self.enabled.get() {
-            ReturnCode::EOFF
-
-        } else if !self.active.get() {
-            // cannot cancel sampling that isn't running
-            ReturnCode::EINVAL
-
-        } else if !self.continuous.get() {
-            // cannot cancel a single sample operation
-            ReturnCode::EINVAL
-
-        } else {
-            // stopping a continuous sample operation
-            self.active.set(false);
-            self.continuous.set(false);
-
-            // stop internal timer
-            regs.cr.set(0x02);
-
-            // stop DMA transfer if going
-            let dma_buffer = self.rx_dma.get().map_or(None, |rx_dma| {
-                self.dma_running.set(false);
-                let dma_buf = rx_dma.abort_xfer();
-                rx_dma.disable();
-                dma_buf
-            });
-
-            // if there was a buffer, send it to the client. It will be
-            // partially invalid if it exists, but they were the ones who
-            // wanted to stop in a hurry. In the common case, this is only
-            // called after a `buffer_ready` call, in which case this map will
-            // fizzle
-            self.client.get().map(|client| {
-                dma_buffer.map(|dma_buf| {
-                    let length = self.rx_len.get();
-
-                    // change buffer back into a [u16]
-                    // the buffer was originally a [u16] so this should be okay
-                    let buf_ptr =
-                        unsafe { mem::transmute::<*mut u8, *mut u16>(dma_buf.as_mut_ptr()) };
-                    let buf = unsafe { slice::from_raw_parts_mut(buf_ptr, dma_buf.len() / 2) };
-
-                    // pass the buffer up to the next layer. It will then either send down another
-                    // buffer to continue sampling, or stop sampling
-                    client.buffer_ready(buf, length);
-                });
-            });
-            self.rx_len.set(0);
 
             ReturnCode::SUCCESS
         }
@@ -529,6 +573,7 @@ impl hil::adc::AdcContinuous for Adc {
 /// Implements a client of a DMA.
 impl dma::DMAClient for Adc {
     /// Handler for DMA transfer completion.
+    ///
     /// pid - the DMA peripheral that is complete
     fn xfer_done(&self, pid: dma::DMAPeripheral) {
         // check if this was an RX transfer
@@ -544,8 +589,8 @@ impl dma::DMAClient for Adc {
             });
 
             // get length
-            let length = self.rx_len.get();
-            self.rx_len.set(0);
+            let length = self.rx_length.get();
+            self.rx_length.set(0);
 
             // alert client
             self.client.get().map(|client| {
@@ -559,7 +604,7 @@ impl dma::DMAClient for Adc {
 
                     // pass the buffer up to the next layer. It will then either send down another
                     // buffer to continue sampling, or stop sampling
-                    client.buffer_ready(buf, length);
+                    client.samples_ready(buf, length);
                 });
             });
         }

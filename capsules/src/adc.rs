@@ -11,10 +11,10 @@ use kernel::hil;
 
 /// ADC application driver, used by applications to interact with ADC.
 /// Not currently virtualized, only one application can use it at a time.
-pub struct Adc<'a, A: hil::adc::AdcSingle + hil::adc::AdcContinuous + 'a> {
+pub struct Adc<'a, A: hil::adc::Adc + hil::adc::AdcHighSpeed + 'a> {
     // ADC driver
     adc: &'a A,
-    channels: &'a [&'a <A as hil::adc::AdcSingle>::Channel],
+    channels: &'a [&'a <A as hil::adc::Adc>::Channel],
 
     // ADC state
     active: Cell<bool>,
@@ -25,12 +25,13 @@ pub struct Adc<'a, A: hil::adc::AdcSingle + hil::adc::AdcContinuous + 'a> {
     channel: Cell<usize>,
     callback: Cell<Option<Callback>>,
     app_buf_offset: Cell<usize>,
+    samples_remaining: Cell<usize>,
     using_app_buf1: Cell<bool>,
 
     // ADC buffers
     adc_buf1: TakeCell<'static, [u16]>,
     adc_buf2: TakeCell<'static, [u16]>,
-    using_adc_buf1: Cell<bool>,
+    adc_buf3: TakeCell<'static, [u16]>,
 }
 
 /// ADC modes, used to track internal state and to signify to applications which state a callback
@@ -39,8 +40,9 @@ pub struct Adc<'a, A: hil::adc::AdcSingle + hil::adc::AdcContinuous + 'a> {
 enum AdcMode {
     NoMode = -1,
     SingleSample = 0,
-    MultipleSample = 1,
-    ContinuousSample = 2,
+    ContinuousSample = 1,
+    SingleBuffer = 2,
+    ContinuousBuffer = 3,
 }
 
 /// Holds buffers that the application has passed us
@@ -54,17 +56,20 @@ pub struct AppState {
 /// swapped every 70 us and copied over before the next swap. In testing, it seems to keep up fine.
 pub static mut ADC_BUFFER1: [u16; 128] = [0; 128];
 pub static mut ADC_BUFFER2: [u16; 128] = [0; 128];
+pub static mut ADC_BUFFER3: [u16; 128] = [0; 128];
 
 /// Functions to create, initialize, and interact with the ADC
-impl<'a, A: hil::adc::AdcSingle + hil::adc::AdcContinuous + 'a> Adc<'a, A> {
+impl<'a, A: hil::adc::Adc + hil::adc::AdcHighSpeed + 'a> Adc<'a, A> {
     /// Create a new Adc application interface
     ///
     /// adc - ADC driver to provide application access to
     /// channels - list of ADC channels usable by applications
     /// adc_buf1 - buffer used to hold ADC samples
     /// adc_buf2 - second buffer used when continuously sampling ADC
-    pub fn new(adc: &'a A, channels: &'a [&'a <A as hil::adc::AdcSingle>::Channel],
-               adc_buf1: &'static mut [u16; 128], adc_buf2: &'static mut [u16; 128]) -> Adc<'a, A> {
+    pub fn new(adc: &'a A, channels: &'a [&'a <A as hil::adc::Adc>::Channel],
+               adc_buf1: &'static mut [u16; 128],
+               adc_buf2: &'static mut [u16; 128],
+               adc_buf3: &'static mut [u16; 128]) -> Adc<'a, A> {
         Adc {
             // ADC driver
             adc: adc,
@@ -82,12 +87,13 @@ impl<'a, A: hil::adc::AdcSingle + hil::adc::AdcContinuous + 'a> Adc<'a, A> {
             channel: Cell::new(0),
             callback: Cell::new(None),
             app_buf_offset: Cell::new(0),
+            samples_remaining: Cell::new(0),
             using_app_buf1: Cell::new(true),
 
             // ADC buffers
             adc_buf1: TakeCell::new(adc_buf1),
             adc_buf2: TakeCell::new(adc_buf2),
-            using_adc_buf1: Cell::new(true),
+            adc_buf3: TakeCell::new(adc_buf3),
         }
     }
 
@@ -95,6 +101,44 @@ impl<'a, A: hil::adc::AdcSingle + hil::adc::AdcContinuous + 'a> Adc<'a, A> {
     /// This can be called harmlessly if the ADC has already been initialized
     fn initialize(&self) -> ReturnCode {
         self.adc.initialize()
+    }
+
+    /// Store a buffer we've regained ownership of and return a handle to it
+    /// The handle can have `map` called on it in order to process the data in the buffer
+    ///
+    /// buf - buffer to be stored
+    fn replace_buffer(&self, buf: &'static mut [u16]) -> &TakeCell<'static, [u16]>{
+        if self.adc_buf1.is_none() {
+            self.adc_buf1.replace(buf);
+            &self.adc_buf1
+        } else if self.adc_buf2.is_none() {
+            self.adc_buf2.replace(buf);
+            &self.adc_buf2
+        } else {
+            self.adc_buf3.replace(buf);
+            &self.adc_buf3
+        }
+    }
+
+    /// Find a buffer to give to the ADC to store samples in
+    ///
+    /// closure - function to run on the found buffer
+    fn take_and_map_buffer<F: FnOnce(&'static mut [u16])>(&self, closure: F) {
+        if self.adc_buf1.is_some() {
+            self.adc_buf1.take().map(|mut val| {
+                closure(val);
+            });
+
+        } else if self.adc_buf2.is_some() {
+            self.adc_buf2.take().map(|mut val| {
+                closure(val);
+            });
+
+        } else if self.adc_buf3.is_some() {
+            self.adc_buf3.take().map(|mut val| {
+                closure(val);
+            });
+        }
     }
 
     /// Collect a single analog sample on a channel
@@ -122,11 +166,51 @@ impl<'a, A: hil::adc::AdcSingle + hil::adc::AdcContinuous + 'a> Adc<'a, A> {
         // save state for callback
         self.active.set(true);
         self.mode.set(AdcMode::SingleSample);
-        self.app_buf_offset.set(0);
         self.channel.set(channel);
 
         // start a single sample
         let res = self.adc.sample(chan);
+        if res != ReturnCode::SUCCESS {
+            // failure, clear state
+            self.active.set(false);
+            self.mode.set(AdcMode::NoMode);
+
+            return res;
+        }
+
+        ReturnCode::SUCCESS
+    }
+
+    /// Collected repeated single analog samples on a channel
+    ///
+    /// channel - index into `channels` array, which channel to sample
+    /// frequency - number of samples per second to collect
+    fn sample_continuous(&self, channel: usize, frequency: u32) -> ReturnCode {
+
+        // only one sample at a time
+        if self.active.get() {
+            return ReturnCode::EBUSY;
+        }
+
+        // always initialize. Initialization will be skipped if already complete
+        let res = self.initialize();
+        if res != ReturnCode::SUCCESS {
+            return res;
+        }
+
+        // convert channel index
+        if channel > self.channels.len() {
+            return ReturnCode::EINVAL;
+        }
+        let chan = self.channels[channel];
+
+        // save state for callback
+        self.active.set(true);
+        self.mode.set(AdcMode::ContinuousSample);
+        self.channel.set(channel);
+
+        // start a single sample
+        let res = self.adc.sample_continuous(chan, frequency);
         if res != ReturnCode::SUCCESS {
             // failure, clear state
             self.active.set(false);
@@ -175,23 +259,39 @@ impl<'a, A: hil::adc::AdcSingle + hil::adc::AdcContinuous + 'a> Adc<'a, A> {
 
         // save state for callback
         self.active.set(true);
-        self.mode.set(AdcMode::MultipleSample);
+        self.mode.set(AdcMode::SingleBuffer);
         self.app_buf_offset.set(0);
         self.channel.set(channel);
 
         // start a continuous sample
-        let res = self.adc_buf1.take().map_or(ReturnCode::EBUSY, |buf| {
-            // determine request length
-            let req_len = cmp::min(app_buf_length / 2, buf.len());
+        let res = self.adc_buf1.take().map_or(ReturnCode::EBUSY, |buf1| {
+            self.adc_buf2.take().map_or(ReturnCode::EBUSY, move |buf2| {
+                // determine request length
+                let request_len = app_buf_length / 2;
+                let len1;
+                let len2;
+                if request_len <= buf1.len() {
+                    len1 = app_buf_length;
+                    len2 = 0;
+                } else if request_len <= (buf1.len() + buf2.len()) {
+                    len1 = buf1.len();
+                    len2 = request_len - buf1.len();
+                } else {
+                    len1 = buf1.len();
+                    len2 = buf2.len();
+                }
 
-            self.using_app_buf1.set(true);
-            self.using_adc_buf1.set(true);
-            self.adc.sample_continuous(chan, frequency, buf, req_len)
+                // begin sampling
+                self.using_app_buf1.set(true);
+                self.samples_remaining.set(request_len - len1 - len2);
+                self.adc.sample_highspeed(chan, frequency, buf1, len1, buf2, len2)
+            })
         });
         if res != ReturnCode::SUCCESS {
             // failure, clear state
             self.active.set(false);
             self.mode.set(AdcMode::NoMode);
+            self.samples_remaining.set(0);
 
             return res;
         }
@@ -205,7 +305,7 @@ impl<'a, A: hil::adc::AdcSingle + hil::adc::AdcContinuous + 'a> Adc<'a, A> {
     ///
     /// channel - index into `channels` array, which channel to sample
     /// frequency - number of samples per second to collect
-    fn sample_continuous(&self, channel: usize, frequency: u32) -> ReturnCode {
+    fn sample_buffer_continuous(&self, channel: usize, frequency: u32) -> ReturnCode {
 
         // only one sample at a time
         if self.active.get() {
@@ -236,23 +336,39 @@ impl<'a, A: hil::adc::AdcSingle + hil::adc::AdcContinuous + 'a> Adc<'a, A> {
 
         // save state for callback
         self.active.set(true);
-        self.mode.set(AdcMode::ContinuousSample);
+        self.mode.set(AdcMode::ContinuousBuffer);
         self.app_buf_offset.set(0);
         self.channel.set(channel);
 
         // start a continuous sample
-        let res = self.adc_buf1.take().map_or(ReturnCode::EBUSY, |buf| {
-            // determine request length
-            let req_len = cmp::min(app_buf_length / 2, buf.len());
+        let res = self.adc_buf1.take().map_or(ReturnCode::EBUSY, |buf1| {
+            self.adc_buf2.take().map_or(ReturnCode::EBUSY, move |buf2| {
+                // determine request length
+                let request_len = app_buf_length / 2;
+                let len1;
+                let len2;
+                if request_len <= buf1.len() {
+                    len1 = app_buf_length;
+                    len2 = 0;
+                } else if request_len <= (buf1.len() + buf2.len()) {
+                    len1 = buf1.len();
+                    len2 = request_len - buf1.len();
+                } else {
+                    len1 = buf1.len();
+                    len2 = buf2.len();
+                }
 
-            self.using_app_buf1.set(true);
-            self.using_adc_buf1.set(true);
-            self.adc.sample_continuous(chan, frequency, buf, req_len)
+                // begin sampling
+                self.using_app_buf1.set(true);
+                self.samples_remaining.set(request_len - len1 - len2);
+                self.adc.sample_highspeed(chan, frequency, buf1, len1, buf2, len2)
+            })
         });
         if res != ReturnCode::SUCCESS {
             // failure, clear state
             self.active.set(false);
             self.mode.set(AdcMode::NoMode);
+            self.samples_remaining.set(0);
 
             return res;
         }
@@ -261,9 +377,9 @@ impl<'a, A: hil::adc::AdcSingle + hil::adc::AdcContinuous + 'a> Adc<'a, A> {
     }
 
     /// Stops sampling the ADC
-    /// Any active operation by the ADC is canceled and no callback will be triggered. The ADC may
-    /// not be immediately ready to use afterwards, however, as single samples cannot actually be
-    /// canceled. This is primarily for use in stopping a continuous sampling operation.
+    /// Any active operation by the ADC is canceled. In single-sample mode, no callback will be
+    /// triggered. In buffer-sample mode, a `sampling_complete` callback will occur to return
+    /// ownership of buffers to the capsule.
     fn stop_sampling(&self) -> ReturnCode {
         if !self.active.get() || self.mode.get() == AdcMode::NoMode {
             // already inactive!
@@ -272,38 +388,25 @@ impl<'a, A: hil::adc::AdcSingle + hil::adc::AdcContinuous + 'a> Adc<'a, A> {
 
         // we're going to leave active as true here, but set ourselves to NoMode so the client
         // handler functions will clean up state properly when the ADC is ready again
+        self.mode.set(AdcMode::NoMode);
+        self.app_buf_offset.set(0);
 
-        if self.mode.get() == AdcMode::SingleSample {
-            // set state for callback
-            self.mode.set(AdcMode::NoMode);
-            self.app_buf_offset.set(0);
-
-            // cannot cancel the single sample, but we'll just not send a callback
-            ReturnCode::SUCCESS
-        } else {
-
-            // set state for callback
-            self.mode.set(AdcMode::NoMode);
-            self.app_buf_offset.set(0);
-
-            // actually cancel the operation
-            self.adc.stop_sampling()
-        }
+        // actually cancel the operation
+        self.adc.stop_sampling()
     }
 }
 
 /// Callbacks from the ADC driver
-impl<'a, A: hil::adc::AdcSingle + hil::adc::AdcContinuous + 'a> hil::adc::Client for Adc<'a, A> {
+impl<'a, A: hil::adc::Adc + hil::adc::AdcHighSpeed + 'a> hil::adc::Client for Adc<'a, A> {
     /// Single sample operation complete
     /// Collects the sample and provides a callback to the application
     ///
     /// sample - analog sample value
-    fn sample_done(&self, sample: u16) {
+    fn sample_ready(&self, sample: u16) {
         if self.active.get() && self.mode.get() == AdcMode::SingleSample {
             // single sample complete, clean up state
             self.active.set(false);
             self.mode.set(AdcMode::NoMode);
-            self.app_buf_offset.set(0);
 
             // perform callback
             self.callback.get().map(|mut callback| {
@@ -311,15 +414,28 @@ impl<'a, A: hil::adc::AdcSingle + hil::adc::AdcContinuous + 'a> hil::adc::Client
                                   self.channel.get(),
                                   sample as usize);
             });
+
+        } else if self.active.get() && self.mode.get() == AdcMode::ContinuousSample {
+            // sample ready in continuous sampling operation, keep state
+
+            // perform callback
+            self.callback.get().map(|mut callback| {
+                callback.schedule(AdcMode::ContinuousSample as usize,
+                                  self.channel.get(),
+                                  sample as usize);
+            });
+
         } else {
             // operation probably canceled. Make sure state is consistent. No callback
             self.active.set(false);
             self.mode.set(AdcMode::NoMode);
-            self.app_buf_offset.set(0);
         }
     }
+}
 
-    /// Internal buffer has filled from a continuous or multiple sample operation
+/// Callbacks from the High Speed ADC driver
+impl<'a, A: hil::adc::Adc + hil::adc::AdcHighSpeed + 'a> hil::adc::HighSpeedClient for Adc<'a, A> {
+    /// Internal buffer has filled from a buffered sampling operation.
     /// Copies data over to application buffer, determines if more data is needed, and performs a
     /// callback to the application if ready. If continuously sampling, also swaps application
     /// buffers and continues sampling when neccessary. If only filling a single buffer, stops
@@ -328,30 +444,18 @@ impl<'a, A: hil::adc::AdcSingle + hil::adc::AdcContinuous + 'a> hil::adc::Client
     /// buf - internal buffer filled with analog samples
     /// length - number of valid samples in the buffer, guaranteed to be less than or equal to
     ///          buffer length
-    fn buffer_ready(&self, buf: &'static mut [u16], length: usize) {
+    fn samples_ready(&self, buf: &'static mut [u16], length: usize) {
 
-        // determine which adc buffer is which
-        let curr_adc_buf;
-        let next_adc_buf;
-        if self.using_adc_buf1.get() {
-            curr_adc_buf = &self.adc_buf1;
-            next_adc_buf = &self.adc_buf2;
-        } else {
-            curr_adc_buf = &self.adc_buf2;
-            next_adc_buf = &self.adc_buf1;
-        }
-
-        // replace buffer
-        curr_adc_buf.replace(buf);
-
-        // is this an expected buffer?
+        // do we expect a buffer?
         if self.active.get() &&
-           (self.mode.get() == AdcMode::MultipleSample ||
-            self.mode.get() == AdcMode::ContinuousSample) {
+           (self.mode.get() == AdcMode::SingleBuffer ||
+            self.mode.get() == AdcMode::ContinuousBuffer) {
+
+            // we did expect a buffer. Determine the current application state
             self.app_state.map(|state| {
 
-                // determine which app buffer we should use
-                // also save the length of the next buffer, in case we need to start a new request
+                // determine which app buffer to copy data into and which is next up if we're in
+                // continuous mode
                 let app_buf;
                 let next_app_buf;
                 if self.using_app_buf1.get() {
@@ -361,21 +465,46 @@ impl<'a, A: hil::adc::AdcSingle + hil::adc::AdcContinuous + 'a> hil::adc::Client
                     app_buf = state.app_buf2.as_mut();
                     next_app_buf = state.app_buf1.as_ref();
                 }
-                app_buf.map(move |app_buf| {
 
-                    // check if we have received enough samples
-                    let samples_remaining = (app_buf.len() - self.app_buf_offset.get()) / 2;
-                    if length < samples_remaining {
-                        // we need to receive more samples
+                // do we still need to request more samples?
+                let finished;
+                if self.samples_remaining.get() > 0 {
+                    // we need to receive more samples
+                    finished = false;
 
-                        // continue transfer with next buffer
-                        next_adc_buf.take().map(|adc_buf| {
-                            self.using_adc_buf1.set(!self.using_adc_buf1.get());
-                            self.adc.continue_sampling(adc_buf, samples_remaining - length);
+                    // provide a new buffer
+                    self.take_and_map_buffer(|adc_buf| {
+                        let request_len = cmp::min(self.samples_remaining.get(), adc_buf.len());
+                        self.samples_remaining.set(self.samples_remaining.get() - request_len);
+                        self.adc.provide_buffer(adc_buf, request_len);
+                    });
+
+                } else {
+                    // we've completed the current app_buffer
+                    finished = true;
+
+                    // in ContinuousBuffer mode, provide a new buffer anyways
+                    if self.mode.get() == AdcMode::ContinuousBuffer {
+                        // update samples remaining for new app buffer
+                        // we don't update the buffer offset yet since we haven't copied over data
+                        let next_buf_len = next_app_buf.map_or(0, |buf| buf.len());
+                        self.samples_remaining.set((next_buf_len / 2));
+
+                        // provide a new buffer
+                        // set length based on samples remaining in new app buffer
+                        self.take_and_map_buffer(|adc_buf| {
+                            let request_len = cmp::min(self.samples_remaining.get(), adc_buf.len());
+                            self.samples_remaining.set(self.samples_remaining.get() - request_len);
+                            self.adc.provide_buffer(adc_buf, request_len);
                         });
+                    }
+                }
 
-                        // copy bytes to app buffer
-                        // In order, the `for` commands:
+                app_buf.map(move |app_buf| {
+                    // copy bytes to app buffer
+                    // first, regain ownership of the buffer and then iterate over the data
+                    self.replace_buffer(buf).map(|adc_buf| {
+                        // The `for` commands:
                         //  * `chunks_mut`: get sets of two bytes from the app buffer
                         //  * `skip`: skips the already written bytes from the app buffer
                         //  * `zip`: ties that iterator to an iterator on the adc buffer, limiting
@@ -383,7 +512,7 @@ impl<'a, A: hil::adc::AdcSingle + hil::adc::AdcContinuous + 'a> hil::adc::Client
                         //  * `take`: limits us to the minimum of buffer lengths or sample length
                         // We then split each sample into its two bytes and copy them to the app
                         // buffer
-                        curr_adc_buf.map(|adc_buf| for (chunk, &sample) in app_buf.chunks_mut(2)
+                        for (chunk, &sample) in app_buf.chunks_mut(2)
                             .skip(self.app_buf_offset.get() / 2)
                             .zip(adc_buf.iter())
                             .take(length) {
@@ -393,65 +522,31 @@ impl<'a, A: hil::adc::AdcSingle + hil::adc::AdcContinuous + 'a> hil::adc::Client
                                 *byte = (val & 0xFF) as u8;
                                 val = val >> 8;
                             }
-                        });
-
-                        // update our offset based on how many samples we copied
-                        self.app_buf_offset.set(self.app_buf_offset.get() + length * 2);
-
-                    } else {
-                        // we have received the full app buffer
-
-                        // save original values for later use
-                        let prev_app_buf_offset = self.app_buf_offset.get();
-                        let prev_mode = self.mode.get();
-
-                        // do we need to start another transfer?
-                        if self.mode.get() == AdcMode::MultipleSample {
-                            // we are finished!
-                            self.active.set(false);
-                            self.mode.set(AdcMode::NoMode);
-                            self.app_buf_offset.set(0);
-                            self.adc.stop_sampling();
-
-                        } else {
-                            // we need to start another sampling operation!
-                            self.app_buf_offset.set(0);
-                            self.using_app_buf1.set(!self.using_app_buf1.get());
-
-                            // continue sampling
-                            next_adc_buf.take().map(|adc_buf| {
-                                self.using_adc_buf1.set(!self.using_adc_buf1.get());
-                                let next_buf_len = next_app_buf.map_or(0, |buf| buf.len());
-                                self.adc.continue_sampling(adc_buf, next_buf_len / 2);
-                            });
                         }
 
-                        // copy bytes to app buffer
-                        // In order, the `for` commands:
-                        //  * `chunks_mut`: get sets of two bytes from the app buffer
-                        //  * `skip`: skips the already written bytes from the app buffer
-                        //  * `zip`: ties that iterator to an iterator on the adc buffer, limiting
-                        //    iteration length to the minimum of each of their lengths
-                        //  * `take`: limits us to the minimum of buffer lengths or sample length
-                        // We then split each sample into its two bytes and copy them to the app
-                        // buffer
-                        curr_adc_buf.map(|adc_buf| for (chunk, &sample) in app_buf.chunks_mut(2)
-                            .skip(prev_app_buf_offset / 2)
-                            .zip(adc_buf.iter())
-                            .take(length) {
+                        // update our byte offset based on how many samples we copied
+                        self.app_buf_offset.set(self.app_buf_offset.get() + length * 2);
+                    });
 
-                            let mut val = sample;
-                            for byte in chunk.iter_mut() {
-                                *byte = (val & 0xFF) as u8;
-                                val = val >> 8;
-                            }
-                        });
-
+                    // if the app_buffer is filled, perform callback
+                    if finished {
                         // perform callback
                         self.callback.get().map(|mut callback| {
                             let len_chan = ((app_buf.len() / 2) << 8) | (self.channel.get() & 0xFF);
-                            callback.schedule(prev_mode as usize, len_chan, app_buf.ptr() as usize);
+                            callback.schedule(self.mode.get() as usize, len_chan, app_buf.ptr() as usize);
                         });
+
+                        // if the mode is SingleBuffer, the operation is complete. Clean up state
+                        if self.mode.get() == AdcMode::SingleBuffer {
+                            self.active.set(false);
+                            self.mode.set(AdcMode::NoMode);
+                            self.app_buf_offset.set(0);
+
+                        } else {
+                            // if the mode is ContinuousBuffer, we've just switched app buffers
+                            self.app_buf_offset.set(0);
+                            self.using_app_buf1.set(!self.using_app_buf1.get());
+                        }
                     }
                 });
             });
@@ -461,12 +556,43 @@ impl<'a, A: hil::adc::AdcSingle + hil::adc::AdcContinuous + 'a> hil::adc::Client
             self.active.set(false);
             self.mode.set(AdcMode::NoMode);
             self.app_buf_offset.set(0);
+
+            // still need to replace the buffer
+            self.replace_buffer(buf);
         }
+    }
+
+    /// Called when sampling has been stopped or an error has occurred to return ownership of
+    /// buffers to the capsule. Both buffers should exist if an error occurred, while only the
+    /// first will exist if `stop_sampling` was called in the `samples_ready` callback.
+    ///
+    /// buf1: reference to first buffer, possibly None
+    /// buf2: reference to second buffer, possibly None
+    /// error: return code representing the error which lead to this being called, SUCCESS if
+    ///        stopped instead
+    fn sampling_complete(&self, buf1: Option<&'static mut [u16]>, buf2: Option<&'static mut [u16]>,
+                      _error: ReturnCode) {
+
+        // figure out where to put the first buffer
+        buf1.map(|buf| {
+            self.replace_buffer(buf);
+        });
+
+        // figure out where to put the second buffer
+        buf2.map(|buf| {
+            self.replace_buffer(buf);
+        });
+
+        // we don't really care whether there was an error or just a `stop_sampling` call, just
+        // clean up state
+        self.active.set(false);
+        self.mode.set(AdcMode::NoMode);
+        self.app_buf_offset.set(0);
     }
 }
 
 /// Implementations of application syscalls
-impl<'a, A: hil::adc::AdcSingle + hil::adc::AdcContinuous + 'a> Driver for Adc<'a, A> {
+impl<'a, A: hil::adc::Adc + hil::adc::AdcHighSpeed + 'a> Driver for Adc<'a, A> {
     /// Provides access to a buffer from the application to store data in or read data from
     ///
     /// _appid - application identifier, unused
@@ -529,22 +655,29 @@ impl<'a, A: hil::adc::AdcSingle + hil::adc::AdcContinuous + 'a> Driver for Adc<'
                 self.sample(channel)
             }
 
-            // Multiple sample on a channel
+            // Repeated single samples on a channel
             2 => {
-                let channel = (data & 0xFF) as usize;
-                let frequency = (data >> 8) as u32;
-                self.sample_buffer(channel, frequency)
-            }
-
-            // Continuous sample on a channel
-            3 => {
                 let channel = (data & 0xFF) as usize;
                 let frequency = (data >> 8) as u32;
                 self.sample_continuous(channel, frequency)
             }
 
+            // Multiple sample on a channel
+            3 => {
+                let channel = (data & 0xFF) as usize;
+                let frequency = (data >> 8) as u32;
+                self.sample_buffer(channel, frequency)
+            }
+
+            // Continuous buffered sampling on a channel
+            4 => {
+                let channel = (data & 0xFF) as usize;
+                let frequency = (data >> 8) as u32;
+                self.sample_buffer_continuous(channel, frequency)
+            }
+
             // Stop sampling
-            4 => self.stop_sampling(),
+            5 => self.stop_sampling(),
 
             // default
             _ => ReturnCode::ENOSUPPORT,

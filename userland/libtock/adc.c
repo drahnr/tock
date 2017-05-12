@@ -57,14 +57,20 @@ static void adc_cb(int callback_type,
       result->sample = arg2;
       break;
 
-    case MultipleSample:
+    case ContinuousSample:
+      result->error = SUCCESS;
+      result->channel = arg1;
+      result->sample = arg2;
+      break;
+
+    case SingleBuffer:
       result->error = SUCCESS;
       result->channel = (arg1 & 0xFF);
       result->length = ((arg1 >> 8) & 0xFFFFFF);
       result->buffer = (uint16_t*)arg2;
       break;
 
-    case ContinuousSample:
+    case ContinuousBuffer:
       result->error = SUCCESS;
       result->channel = (arg1 & 0xFF);
       result->length = ((arg1 >> 8) & 0xFFFFFF);
@@ -105,18 +111,23 @@ int adc_single_sample(uint8_t channel) {
   return command(DRIVER_NUM_ADC, 1, channel);
 }
 
-int adc_multiple_sample(uint8_t channel, uint32_t frequency) {
+int adc_continuous_sample(uint8_t channel, uint32_t frequency) {
   uint32_t chan_freq = (frequency << 8) | (channel & 0xFF);
   return command(DRIVER_NUM_ADC, 2, chan_freq);
 }
 
-int adc_continuous_sample(uint8_t channel, uint32_t frequency) {
+int adc_buffered_sample(uint8_t channel, uint32_t frequency) {
   uint32_t chan_freq = (frequency << 8) | (channel & 0xFF);
   return command(DRIVER_NUM_ADC, 3, chan_freq);
 }
 
+int adc_continuous_buffered_sample(uint8_t channel, uint32_t frequency) {
+  uint32_t chan_freq = (frequency << 8) | (channel & 0xFF);
+  return command(DRIVER_NUM_ADC, 4, chan_freq);
+}
+
 int adc_stop_sampling(void) {
-  return command(DRIVER_NUM_ADC, 4, 0);
+  return command(DRIVER_NUM_ADC, 5, 0);
 }
 
 int adc_sample_sync(uint8_t channel, uint16_t* sample) {
@@ -152,7 +163,7 @@ int adc_sample_buffer_sync(uint8_t channel, uint32_t frequency, uint16_t* buffer
   err = adc_set_buffer(buffer, length);
   if (err < SUCCESS) return err;
 
-  err = adc_multiple_sample(channel, frequency);
+  err = adc_buffered_sample(channel, frequency);
   if (err < SUCCESS) return err;
 
   // wait for callback

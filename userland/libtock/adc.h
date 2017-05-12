@@ -15,8 +15,9 @@ extern "C" {
 // Used to tell which operation a callback corresponds to
 typedef enum {
   SingleSample = 0,
-  MultipleSample = 1,
-  ContinuousSample = 2,
+  ContinuousSample = 1,
+  SingleBuffer = 2,
+  ContinuousBuffer = 3
 } ADCMode_t;
 
 // ***** System Call Interface *****
@@ -54,18 +55,24 @@ int adc_channel_count(void);
 // channel - number of the channel to be sampled
 int adc_single_sample(uint8_t channel);
 
+// request an repeated analog samples at a given frequency
+//
+// channel - number of the channel to be sampled
+// frequency - rate in samples per second to collect data at
+int adc_continuous_sample(uint8_t channel, uint32_t frequency);
+
 // request a buffer full of samples from the ADC
 //
 // channel - number of the channel to be sampled
 // frequency - rate in samples per second to collect data at
-int adc_multiple_sample(uint8_t channel, uint32_t frequency);
+int adc_buffered_sample(uint8_t channel, uint32_t frequency);
 
 // request continuous ADC sampling
 // Alternates between the two provided application buffers
 //
 // channel - number of the channel to be sampled
 // frequency - rate in samples per second to collect data at
-int adc_continuous_sample(uint8_t channel, uint32_t frequency);
+int adc_continuous_buffered_sample(uint8_t channel, uint32_t frequency);
 
 // cancel an outstanding ADC operation
 // No callback will occur from the prior ADC operation. The ADC may not be
