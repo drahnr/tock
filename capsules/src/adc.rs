@@ -68,10 +68,12 @@ impl<'a, A: hil::adc::Adc + hil::adc::AdcHighSpeed + 'a> Adc<'a, A> {
     /// channels - list of ADC channels usable by applications
     /// adc_buf1 - buffer used to hold ADC samples
     /// adc_buf2 - second buffer used when continuously sampling ADC
-    pub fn new(adc: &'a A, channels: &'a [&'a <A as hil::adc::Adc>::Channel],
+    pub fn new(adc: &'a A,
+               channels: &'a [&'a <A as hil::adc::Adc>::Channel],
                adc_buf1: &'static mut [u16; 128],
                adc_buf2: &'static mut [u16; 128],
-               adc_buf3: &'static mut [u16; 128]) -> Adc<'a, A> {
+               adc_buf3: &'static mut [u16; 128])
+               -> Adc<'a, A> {
         Adc {
             // ADC driver
             adc: adc,
@@ -111,7 +113,7 @@ impl<'a, A: hil::adc::Adc + hil::adc::AdcHighSpeed + 'a> Adc<'a, A> {
     /// The handle can have `map` called on it in order to process the data in the buffer
     ///
     /// buf - buffer to be stored
-    fn replace_buffer(&self, buf: &'static mut [u16]) -> &TakeCell<'static, [u16]>{
+    fn replace_buffer(&self, buf: &'static mut [u16]) -> &TakeCell<'static, [u16]> {
         if self.adc_buf1.is_none() {
             self.adc_buf1.replace(buf);
             &self.adc_buf1
@@ -129,19 +131,13 @@ impl<'a, A: hil::adc::Adc + hil::adc::AdcHighSpeed + 'a> Adc<'a, A> {
     /// closure - function to run on the found buffer
     fn take_and_map_buffer<F: FnOnce(&'static mut [u16])>(&self, closure: F) {
         if self.adc_buf1.is_some() {
-            self.adc_buf1.take().map(|mut val| {
-                closure(val);
-            });
+            self.adc_buf1.take().map(|mut val| { closure(val); });
 
         } else if self.adc_buf2.is_some() {
-            self.adc_buf2.take().map(|mut val| {
-                closure(val);
-            });
+            self.adc_buf2.take().map(|mut val| { closure(val); });
 
         } else if self.adc_buf3.is_some() {
-            self.adc_buf3.take().map(|mut val| {
-                closure(val);
-            });
+            self.adc_buf3.take().map(|mut val| { closure(val); });
         }
     }
 
@@ -512,8 +508,8 @@ impl<'a, A: hil::adc::Adc + hil::adc::AdcHighSpeed + 'a> hil::adc::HighSpeedClie
                             // outstanding request to the ADC for the next app_buffer that was
                             // placed last time, so we need to account for that
                             let samples_needed = next_app_buf.map_or(0, |buf| buf.len() / 2);
-                            self.samples_remaining.set(
-                                samples_needed - self.next_samples_outstanding.get());
+                            self.samples_remaining
+                                .set(samples_needed - self.next_samples_outstanding.get());
                             self.samples_outstanding.set(self.next_samples_outstanding.get());
                             self.using_app_buf1.set(!self.using_app_buf1.get());
 
@@ -534,8 +530,8 @@ impl<'a, A: hil::adc::Adc + hil::adc::AdcHighSpeed + 'a> hil::adc::HighSpeedClie
                                 // just make a request and handle the state updating on next
                                 // callback
                                 self.take_and_map_buffer(|adc_buf| {
-                                    let samples_needed =
-                                        next_next_app_buf.as_ref().map_or(0, |buf| buf.len() / 2);
+                                    let samples_needed = next_next_app_buf.as_ref()
+                                        .map_or(0, |buf| buf.len() / 2);
                                     let request_len = cmp::min(samples_needed, adc_buf.len());
                                     self.next_samples_outstanding.set(request_len);
                                     self.adc.provide_buffer(adc_buf, request_len);
@@ -546,12 +542,12 @@ impl<'a, A: hil::adc::Adc + hil::adc::AdcHighSpeed + 'a> hil::adc::HighSpeedClie
 
                                 // provide a new buffer and update state
                                 self.take_and_map_buffer(|adc_buf| {
-                                    let request_len =
-                                        cmp::min(self.samples_remaining.get(), adc_buf.len());
-                                    self.samples_remaining.set(
-                                        self.samples_remaining.get() - request_len);
-                                    self.samples_outstanding.set(
-                                        self.samples_outstanding.get() + request_len);
+                                    let request_len = cmp::min(self.samples_remaining.get(),
+                                                               adc_buf.len());
+                                    self.samples_remaining
+                                        .set(self.samples_remaining.get() - request_len);
+                                    self.samples_outstanding
+                                        .set(self.samples_outstanding.get() + request_len);
                                     self.adc.provide_buffer(adc_buf, request_len);
                                 });
                             }
@@ -625,7 +621,9 @@ impl<'a, A: hil::adc::Adc + hil::adc::AdcHighSpeed + 'a> hil::adc::HighSpeedClie
                         // actually schedule the callback
                         self.callback.get().map(|mut callback| {
                             let len_chan = ((app_buf.len() / 2) << 8) | (self.channel.get() & 0xFF);
-                            callback.schedule(self.mode.get() as usize, len_chan, app_buf.ptr() as usize);
+                            callback.schedule(self.mode.get() as usize,
+                                              len_chan,
+                                              app_buf.ptr() as usize);
                         });
 
                         // if the mode is SingleBuffer, the operation is complete. Clean up state
@@ -665,18 +663,16 @@ impl<'a, A: hil::adc::Adc + hil::adc::AdcHighSpeed + 'a> hil::adc::HighSpeedClie
     /// buf2: reference to second buffer, possibly None
     /// error: return code representing the error which lead to this being called, SUCCESS if
     ///        stopped instead
-    fn sampling_complete(&self, buf1: Option<&'static mut [u16]>, buf2: Option<&'static mut [u16]>,
-                      _error: ReturnCode) {
+    fn sampling_complete(&self,
+                         buf1: Option<&'static mut [u16]>,
+                         buf2: Option<&'static mut [u16]>,
+                         _error: ReturnCode) {
 
         // figure out where to put the first buffer
-        buf1.map(|buf| {
-            self.replace_buffer(buf);
-        });
+        buf1.map(|buf| { self.replace_buffer(buf); });
 
         // figure out where to put the second buffer
-        buf2.map(|buf| {
-            self.replace_buffer(buf);
-        });
+        buf2.map(|buf| { self.replace_buffer(buf); });
 
         // we don't really care whether there was an error or just a `stop_sampling` call, just
         // clean up state

@@ -46,13 +46,13 @@ pub trait AdcHighSpeed: Adc {
     /// buffer to be sent via the `provide_buffer` call. Length fields correspond to the number of
     /// samples that should be collected in each buffer.
     fn sample_highspeed(&self,
-                         channel: &Self::Channel,
-                         frequency: u32,
-                         buffer1: &'static mut [u16],
-                         length1: usize,
-                         buffer2: &'static mut [u16],
-                         length2: usize)
-                         -> ReturnCode;
+                        channel: &Self::Channel,
+                        frequency: u32,
+                        buffer1: &'static mut [u16],
+                        length1: usize,
+                        buffer2: &'static mut [u16],
+                        length2: usize)
+                        -> ReturnCode;
 
     /// Provide a new buffer to fill with the ongoing `sample_continuous` configuration.
     /// Expected to be called in a `buffer_ready` callback. Note that if this is not called
@@ -63,7 +63,6 @@ pub trait AdcHighSpeed: Adc {
 
 /// Trait for handling callbacks from high-speed ADC calls.
 pub trait HighSpeedClient {
-
     /// Called when a buffer is full.
     /// The length provided will always be less than or equal to the length of the buffer. Expects
     /// an additional call to either provide another buffer or stop sampling

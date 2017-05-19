@@ -209,13 +209,14 @@ impl Adc {
     /// buf1 - first buffer to return, may be None
     /// buf2 - second buffer to return, may be None
     /// errcode - what error occurred leading to the buffers being returned
-    fn return_buffers(&self, buf1: Option<&'static mut [u16]>, buf2: Option<&'static mut [u16]>,
-                      errcode: ReturnCode) -> ReturnCode {
+    fn return_buffers(&self,
+                      buf1: Option<&'static mut [u16]>,
+                      buf2: Option<&'static mut [u16]>,
+                      errcode: ReturnCode)
+                      -> ReturnCode {
 
         // something went wrong, return the buffers to the client
-        self.client.get().map(move |client| {
-            client.sampling_complete(buf1, buf2, errcode);
-        });
+        self.client.get().map(move |client| { client.sampling_complete(buf1, buf2, errcode); });
 
         errcode
     }
@@ -521,9 +522,11 @@ impl hil::adc::Adc for Adc {
             self.client.get().map(|client| {
                 dma_buffer.map_or_else(|| {
                     // there was no buffer in the DMA, return the next one we were holding (if any)
-                    client.sampling_complete(self.next_dma_buffer.take(), None, ReturnCode::SUCCESS);
+                    client.sampling_complete(self.next_dma_buffer.take(), None,
+                            ReturnCode::SUCCESS);
 
-                }, |dma_buf| {
+                },
+                                       |dma_buf| {
                     // there was a buffer in the DMA return it and the one we were holding (if any)
 
                     // change buffer back into a [u16]
@@ -533,7 +536,9 @@ impl hil::adc::Adc for Adc {
                     let buf = unsafe { slice::from_raw_parts_mut(buf_ptr, dma_buf.len() / 2) };
 
                     // return any buffers we still have
-                    client.sampling_complete(Some(buf), self.next_dma_buffer.take(), ReturnCode::SUCCESS);
+                    client.sampling_complete(Some(buf),
+                                             self.next_dma_buffer.take(),
+                                             ReturnCode::SUCCESS);
                 });
             });
             self.rx_length.set(0);
@@ -558,9 +563,13 @@ impl hil::adc::AdcHighSpeed for Adc {
     /// buffer2 - second buffer to fill once the first is full
     /// length2 - number of samples to collect (up to buffer length)
     fn sample_highspeed(&self,
-                         channel: &Self::Channel, frequency: u32,
-                         buffer1: &'static mut [u16], length1: usize,
-                         buffer2: &'static mut [u16], length2: usize) -> ReturnCode {
+                        channel: &Self::Channel,
+                        frequency: u32,
+                        buffer1: &'static mut [u16],
+                        length1: usize,
+                        buffer2: &'static mut [u16],
+                        length2: usize)
+                        -> ReturnCode {
         let regs: &mut AdcRegisters = unsafe { mem::transmute(self.registers) };
 
         if !self.enabled.get() {
@@ -703,8 +712,9 @@ impl dma::DMAClient for Adc {
                 // first determine the buffer's length in samples
                 let dma_len = cmp::min(buf.len(), self.next_dma_length.get());
 
-                // only continue with a nonzero length. If we were given a zero-length buffer or length
-                // field, assume that the user knew what was going on, and just don't use the buffer
+                // only continue with a nonzero length. If we were given a zero-length buffer or
+                // length field, assume that the user knew what was going on, and just don't use
+                // the buffer
                 if dma_len > 0 {
                     // change buffer into a [u8]
                     // this is unsafe but acceptable for the following reasons
@@ -714,7 +724,8 @@ impl dma::DMAClient for Adc {
                     //    make sure we don't go past dma_buf.len()/width
                     //  * we will transmute the array back to a [u16] after the DMA
                     //    transfer is complete
-                    let dma_buf_ptr = unsafe { mem::transmute::<*mut u16, *mut u8>(buf.as_mut_ptr()) };
+                    let dma_buf_ptr =
+                        unsafe { mem::transmute::<*mut u16, *mut u8>(buf.as_mut_ptr()) };
                     let dma_buf = unsafe { slice::from_raw_parts_mut(dma_buf_ptr, buf.len() * 2) };
 
                     // set up the DMA
