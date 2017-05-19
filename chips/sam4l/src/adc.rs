@@ -104,19 +104,25 @@ impl<C: hil::adc::Client + hil::adc::HighSpeedClient> EverythingClient for C {}
 pub struct Adc {
     registers: *mut AdcRegisters,
 
+    // state tracking for the ADC
     enabled: Cell<bool>,
     adc_clk_freq: Cell<u32>,
     active: Cell<bool>,
     continuous: Cell<bool>,
     dma_running: Cell<bool>,
 
-    next_dma_buffer: TakeCell<'static, [u16]>,
-    next_dma_length: Cell<usize>,
+    // timer fire counting for slow sampling rates
+    timer_repeats: Cell<u8>,
+    timer_counts: Cell<u8>,
 
+    // DMA peripheral, buffers, and length
     rx_dma: Cell<Option<&'static dma::DMAChannel>>,
     rx_dma_peripheral: dma::DMAPeripheral,
     rx_length: Cell<usize>,
+    next_dma_buffer: TakeCell<'static, [u16]>,
+    next_dma_length: Cell<usize>,
 
+    // ADC client to send sample complete notifications to
     client: Cell<Option<&'static EverythingClient>>,
 }
 
@@ -167,13 +173,16 @@ impl Adc {
             continuous: Cell::new(false),
             dma_running: Cell::new(false),
 
-            next_dma_buffer: TakeCell::empty(),
-            next_dma_length: Cell::new(0),
+            // timer repeating state for slow sampling rates
+            timer_repeats: Cell::new(0),
+            timer_counts: Cell::new(0),
 
-            // DMA status
+            // DMA status and stuff
             rx_dma: Cell::new(None),
             rx_dma_peripheral: rx_dma_peripheral,
             rx_length: Cell::new(0),
+            next_dma_buffer: TakeCell::empty(),
+            next_dma_length: Cell::new(0),
 
             // higher layer to send responses to
             client: Cell::new(None),
@@ -194,28 +203,65 @@ impl Adc {
         self.rx_dma.set(Some(rx_dma));
     }
 
+    /// Return buffers to the client if an error occurs.
+    /// Used internally and only valid for AdcHighSpeed implementations.
+    ///
+    /// buf1 - first buffer to return, may be None
+    /// buf2 - second buffer to return, may be None
+    /// errcode - what error occurred leading to the buffers being returned
+    fn return_buffers(&self, buf1: Option<&'static mut [u16]>, buf2: Option<&'static mut [u16]>,
+                      errcode: ReturnCode) -> ReturnCode {
+
+        // something went wrong, return the buffers to the client
+        self.client.get().map(move |client| {
+            client.sampling_complete(buf1, buf2, errcode);
+        });
+
+        errcode
+    }
+
     /// Interrupt handler for the ADC.
     pub fn handle_interrupt(&mut self) {
         let regs: &mut AdcRegisters = unsafe { mem::transmute(self.registers) };
         let status = regs.sr.get();
 
-        //XXX: need to update this code
+        if self.enabled.get() && self.active.get() {
+            if status & 0x01 == 0x01 {
+                // sample complete interrupt
 
-        // sequencer end of conversion (sample complete)
-        if status & 0x01 == 0x01 {
-            if self.enabled.get() && self.active.get() && !self.continuous.get() {
-                self.active.set(false);
+                // should we deal with this sample now, or wait for the next one?
+                if self.timer_counts.get() >= self.timer_repeats.get() {
+                    // we actually care about this sample
 
-                // disable interrupt
-                regs.idr.set(1);
+                    // single sample complete. Send value to client
+                    let val = (regs.lcv.get() & 0xffff) as u16;
+                    self.client.get().map(|client| { client.sample_ready(val); });
 
-                // single sample complete. Send value to client
-                let val = (regs.lcv.get() & 0xffff) as u16;
-                self.client.get().map(|client| { client.sample_ready(val); });
+                    // clean up state
+                    if self.continuous.get() {
+                        // continuous sampling, reset counts and keep going
+                        self.timer_counts.set(0);
+
+                    } else {
+                        // single sampling, disable interrupt and set inactive
+                        self.active.set(false);
+                        regs.idr.set(1);
+                    }
+
+                } else {
+                    // increment count and wait for next sample
+                    self.timer_counts.set(self.timer_counts.get() + 1);
+                }
+
+                // clear status
+                regs.scr.set(0x00000001);
             }
 
-            // clear status
-            regs.scr.set(0x00000001);
+        } else {
+            // we are inactive, why did we get an interrupt?
+            // disable all interrupts, clear status, and just ignore it
+            regs.idr.set(0x2F);
+            regs.scr.set(0x2F);
         }
     }
 }
@@ -319,6 +365,8 @@ impl hil::adc::Adc for Adc {
         } else {
             self.active.set(true);
             self.continuous.set(false);
+            self.timer_repeats.set(0);
+            self.timer_counts.set(0);
 
             let cfg = (0x7 << 20) | // MUXNEG: ground pad
                       (channel.chan_num << 16) | // MUXPOS: selection
@@ -336,16 +384,19 @@ impl hil::adc::Adc for Adc {
             regs.scr.set(0x2F);
 
             // enable end of conversion interrupt
-            regs.ier.set(1);
+            regs.ier.set(0x01);
 
             // initiate conversion
-            regs.cr.set(8);
+            regs.cr.set(0x08);
 
             ReturnCode::SUCCESS
         }
     }
 
     /// Request repeated analog samples on a particular channel, calling after each sample.
+    /// In order to not unacceptably slow down the system collecting samples, this interface is
+    /// limited to one sample every 100 microseconds (10000 samples per second). To sample faster,
+    /// use the sample_highspeed function.
     ///
     /// channel - the ADC channel to sample
     /// frequency - the number of samples per second to collect
@@ -356,11 +407,68 @@ impl hil::adc::Adc for Adc {
             ReturnCode::EOFF
 
         } else if self.active.get() {
-            // only one operation at a time
+            // only one sample at a time
             ReturnCode::EBUSY
 
+        } else if frequency == 0 || frequency > 10000 {
+            // limit sampling frequencies to a valid range
+            ReturnCode::EINVAL
+
         } else {
-            //XXX: need to fill this in
+            self.active.set(true);
+            self.continuous.set(true);
+
+            let cfg = (0x7 << 20) | // MUXNEG: ground pad
+                      (channel.chan_num << 16) | // MUXPOS: selection
+                      (0x1 << 15) | // INTERNAL: internal neg
+                      (channel.internal << 14) | // INTERNAL: pos selection
+                      (0x0 << 12) | // RES: 12-bit resolution
+                      (0x1 <<  8) | // TRGSEL: internal timer trigger
+                      (0x0 <<  7) | // GCOMP: no gain compensation
+                      (0x7 <<  4) | // GAIN: 0.5x gain
+                      (0x0 <<  2) | // BIPOLAR: unipolar mode
+                      (0x0 <<  0); // HWLA: right justify value
+            regs.seqcfg.set(cfg);
+
+            // stop timer if running
+            regs.cr.set(0x02);
+
+            // setup timer for low-frequency samples. Based on the ADC clock, the minimum timer
+            // frequency is 1500000 / (0xFFFF + 1) = 22.888 Hz. So for any frequency less than
+            // 23 Hz, we will keep our own counter in addition and only actually perform a callback
+            // every N timer fires. This is important to enable low-jitter sampling in the 1-22 Hz
+            // range.
+            let timer_frequency;
+            if frequency < 23 {
+                // set a number of timer repeats before the callback is performed. 60 here is an
+                // arbitrary number which limits the actual itimer frequency to between 42 and 60
+                // in the desired range of 1-22 Hz, which seems slow enough to keep the system from
+                // getting bogged down with interrupts
+                let counts = 60 / frequency;
+                self.timer_repeats.set(counts as u8);
+                self.timer_counts.set(0);
+                timer_frequency = frequency * counts;
+            } else {
+                // we can sample at this frequency directly with the timer
+                self.timer_repeats.set(0);
+                self.timer_counts.set(0);
+                timer_frequency = frequency;
+            }
+
+            // set timer, limit to bounds
+            // f(timer) = f(adc) / (counter + 1)
+            let mut counter = (self.adc_clk_freq.get() / timer_frequency) - 1;
+            counter = cmp::max(cmp::min(counter, 0xFFFF), 0);
+            regs.itimer.set(counter);
+
+            // clear any current status
+            regs.scr.set(0x2F);
+
+            // enable end of conversion interrupt
+            regs.ier.set(0x01);
+
+            // start timer
+            regs.cr.set(0x04);
 
             ReturnCode::SUCCESS
         }
@@ -369,7 +477,7 @@ impl hil::adc::Adc for Adc {
     /// Stop continuously sampling the ADC.
     /// This is expected to be called to stop continuous sampling operations, but can be called to
     /// abort any currently running operation. The buffer, if any, will be returned via the
-    /// `sampling_complete` callback.
+    /// `samples_ready` callback.
     fn stop_sampling(&self) -> ReturnCode {
         let regs: &mut AdcRegisters = unsafe { mem::transmute(self.registers) };
 
@@ -380,36 +488,43 @@ impl hil::adc::Adc for Adc {
             // cannot cancel sampling that isn't running
             ReturnCode::EINVAL
 
-        } else if !self.continuous.get() {
-            // cannot cancel a single sample operation
-            //XXX: really need to figure out how to cancel single samples
-            ReturnCode::EINVAL
-
         } else {
-            //XXX: needs to be updated
-            // stopping a continuous sample operation
+            // clean up state
             self.active.set(false);
             self.continuous.set(false);
+            self.dma_running.set(false);
 
             // stop internal timer
             regs.cr.set(0x02);
 
-            // stop DMA transfer if going
+            // disable sample interrupts
+            regs.idr.set(0x01);
+
+            // reset the ADC peripheral
+            regs.cr.set(0x01);
+
+            // stop DMA transfer if going. This should safely return a None if the DMA was not
+            // being used
             let dma_buffer = self.rx_dma.get().map_or(None, |rx_dma| {
-                self.dma_running.set(false);
                 let dma_buf = rx_dma.abort_xfer();
                 rx_dma.disable();
                 dma_buf
             });
 
-            // if there was a buffer, send it to the client. It will be
-            // partially invalid if it exists, but they were the ones who
-            // wanted to stop in a hurry. In the common case, this is only
-            // called after a `samples_ready` call, in which case this map will
-            // fizzle
+            // if there was a buffer, send it to the client. It will be partially invalid if it
+            // exists, but they were the ones who wanted to stop in a hurry. In the common case,
+            // this is either called after a `samples_ready` call in which case this map will
+            // fizzle, or to stop a non-buffered ADC operation, in which case no buffer will
+            // exist anyways.
+
+            // return buffers to client
             self.client.get().map(|client| {
-                dma_buffer.map(|dma_buf| {
-                    let length = self.rx_length.get();
+                dma_buffer.map_or_else(|| {
+                    // there was no buffer in the DMA, return the next one we were holding (if any)
+                    client.sampling_complete(self.next_dma_buffer.take(), None, ReturnCode::SUCCESS);
+
+                }, |dma_buf| {
+                    // there was a buffer in the DMA return it and the one we were holding (if any)
 
                     // change buffer back into a [u16]
                     // the buffer was originally a [u16] so this should be okay
@@ -417,9 +532,8 @@ impl hil::adc::Adc for Adc {
                         unsafe { mem::transmute::<*mut u8, *mut u16>(dma_buf.as_mut_ptr()) };
                     let buf = unsafe { slice::from_raw_parts_mut(buf_ptr, dma_buf.len() / 2) };
 
-                    // pass the buffer up to the next layer. It will then either send down another
-                    // buffer to continue sampling, or stop sampling
-                    client.samples_ready(buf, length);
+                    // return any buffers we still have
+                    client.sampling_complete(Some(buf), self.next_dma_buffer.take(), ReturnCode::SUCCESS);
                 });
             });
             self.rx_length.set(0);
@@ -449,23 +563,32 @@ impl hil::adc::AdcHighSpeed for Adc {
                          buffer2: &'static mut [u16], length2: usize) -> ReturnCode {
         let regs: &mut AdcRegisters = unsafe { mem::transmute(self.registers) };
 
-        //XXX: gotta fix all of this
-
         if !self.enabled.get() {
-            ReturnCode::EOFF
+            self.return_buffers(Some(buffer1), Some(buffer2), ReturnCode::EOFF)
 
         } else if self.active.get() {
             // only one sample at a time
-            ReturnCode::EBUSY
+            self.return_buffers(Some(buffer1), Some(buffer2), ReturnCode::EBUSY)
 
-        } else if frequency == 0 || frequency > 250000 {
-            // can't sample faster than the max sampling frequency
-            ReturnCode::EINVAL
+        } else if frequency <= (self.adc_clk_freq.get() / (0xFFFF + 1)) || frequency > 250000 {
+            // can't sample faster than the max sampling frequency or slower than the timer can be
+            // set to
+            self.return_buffers(Some(buffer1), Some(buffer2), ReturnCode::EINVAL)
+
+        } else if length1 == 0 {
+            // at least need a valid lenght for the for the first buffer full of samples.
+            // Otherwise, what are we doing here?
+            self.return_buffers(Some(buffer1), Some(buffer2), ReturnCode::EINVAL)
 
         } else {
             self.active.set(true);
             self.continuous.set(true);
 
+            // store the second buffer for later use
+            self.next_dma_buffer.replace(buffer2);
+            self.next_dma_length.set(length2);
+
+            // adc sequencer configuration
             let cfg = (0x7 << 20) | // MUXNEG: ground pad
                       (channel.chan_num << 16) | // MUXPOS: selection
                       (0x1 << 15) | // INTERNAL: internal neg
@@ -526,44 +649,25 @@ impl hil::adc::AdcHighSpeed for Adc {
     /// length - number of samples to collect (up to buffer length)
     fn provide_buffer(&self, buf: &'static mut [u16], length: usize) -> ReturnCode {
         if !self.enabled.get() {
-            ReturnCode::EOFF
+            self.return_buffers(Some(buf), None, ReturnCode::EOFF)
 
         } else if !self.active.get() {
             // cannot continue sampling that isn't running
-            ReturnCode::EINVAL
+            self.return_buffers(Some(buf), None, ReturnCode::EINVAL)
 
         } else if !self.continuous.get() {
             // cannot continue a single sample operation
-            ReturnCode::EINVAL
+            self.return_buffers(Some(buf), None, ReturnCode::EINVAL)
 
-        } else if self.dma_running.get() {
-            // cannot change buffer while DMA is running
-            ReturnCode::EBUSY
+        } else if self.next_dma_buffer.is_some() {
+            // we've already got a second buffer, we don't need a third yet
+            self.return_buffers(Some(buf), None, ReturnCode::EBUSY)
 
         } else {
-            // give a new buffer to the DMA and start it
 
-            // receive up to the buffer's length samples
-            let dma_len = cmp::min(buf.len(), length);
-
-            // change buffer into a [u8]
-            // this is unsafe but acceptable for the following reasons
-            //  * the buffer is aligned based on 16-bit boundary, so the 8-bit
-            //    alignment is fine
-            //  * the DMA is doing checking based on our expected data width to
-            //    make sure we don't go past dma_buf.len()/width
-            //  * we will transmute the array back to a [u16] after the DMA
-            //    transfer is complete
-            let dma_buf_ptr = unsafe { mem::transmute::<*mut u16, *mut u8>(buf.as_mut_ptr()) };
-            let dma_buf = unsafe { slice::from_raw_parts_mut(dma_buf_ptr, buf.len() * 2) };
-
-            // set up the DMA
-            self.rx_dma.get().map(move |dma| {
-                self.dma_running.set(true);
-                dma.enable();
-                self.rx_length.set(dma_len);
-                dma.do_xfer(self.rx_dma_peripheral, dma_buf, dma_len);
-            });
+            // store the buffer for later use
+            self.next_dma_buffer.replace(buf);
+            self.next_dma_length.set(length);
 
             ReturnCode::SUCCESS
         }
@@ -580,7 +684,7 @@ impl dma::DMAClient for Adc {
         if pid == self.rx_dma_peripheral {
             // RX transfer was completed
 
-            // get buffer
+            // get buffer filled with samples from DMA
             let dma_buffer = self.rx_dma.get().map_or(None, |rx_dma| {
                 self.dma_running.set(false);
                 let dma_buf = rx_dma.abort_xfer();
@@ -588,9 +692,45 @@ impl dma::DMAClient for Adc {
                 dma_buf
             });
 
-            // get length
+            // get length of received buffer
             let length = self.rx_length.get();
-            self.rx_length.set(0);
+
+            // start a new transfer with the next buffer
+            // we need to do this quickly in order to keep from missing samples. At 175000 Hz, we
+            // only have 5.8 us (~274 cycles) to do so
+            self.next_dma_buffer.take().map(|buf| {
+
+                // first determine the buffer's length in samples
+                let dma_len = cmp::min(buf.len(), self.next_dma_length.get());
+
+                // only continue with a nonzero length. If we were given a zero-length buffer or length
+                // field, assume that the user knew what was going on, and just don't use the buffer
+                if dma_len > 0 {
+                    // change buffer into a [u8]
+                    // this is unsafe but acceptable for the following reasons
+                    //  * the buffer is aligned based on 16-bit boundary, so the 8-bit
+                    //    alignment is fine
+                    //  * the DMA is doing checking based on our expected data width to
+                    //    make sure we don't go past dma_buf.len()/width
+                    //  * we will transmute the array back to a [u16] after the DMA
+                    //    transfer is complete
+                    let dma_buf_ptr = unsafe { mem::transmute::<*mut u16, *mut u8>(buf.as_mut_ptr()) };
+                    let dma_buf = unsafe { slice::from_raw_parts_mut(dma_buf_ptr, buf.len() * 2) };
+
+                    // set up the DMA
+                    self.rx_dma.get().map(move |dma| {
+                        self.dma_running.set(true);
+                        dma.enable();
+                        self.rx_length.set(dma_len);
+                        dma.do_xfer(self.rx_dma_peripheral, dma_buf, dma_len);
+                    });
+
+                } else {
+                    // if length was zero, just keep the buffer in the takecell so we can return it
+                    // when `stop_sampling` is called
+                    self.next_dma_buffer.replace(buf);
+                }
+            });
 
             // alert client
             self.client.get().map(|client| {

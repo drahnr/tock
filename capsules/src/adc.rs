@@ -26,6 +26,8 @@ pub struct Adc<'a, A: hil::adc::Adc + hil::adc::AdcHighSpeed + 'a> {
     callback: Cell<Option<Callback>>,
     app_buf_offset: Cell<usize>,
     samples_remaining: Cell<usize>,
+    samples_outstanding: Cell<usize>,
+    next_samples_outstanding: Cell<usize>,
     using_app_buf1: Cell<bool>,
 
     // ADC buffers
@@ -88,6 +90,8 @@ impl<'a, A: hil::adc::Adc + hil::adc::AdcHighSpeed + 'a> Adc<'a, A> {
             callback: Cell::new(None),
             app_buf_offset: Cell::new(0),
             samples_remaining: Cell::new(0),
+            samples_outstanding: Cell::new(0),
+            next_samples_outstanding: Cell::new(0),
             using_app_buf1: Cell::new(true),
 
             // ADC buffers
@@ -271,7 +275,7 @@ impl<'a, A: hil::adc::Adc + hil::adc::AdcHighSpeed + 'a> Adc<'a, A> {
                 let len1;
                 let len2;
                 if request_len <= buf1.len() {
-                    len1 = app_buf_length;
+                    len1 = app_buf_length / 2;
                     len2 = 0;
                 } else if request_len <= (buf1.len() + buf2.len()) {
                     len1 = buf1.len();
@@ -284,6 +288,7 @@ impl<'a, A: hil::adc::Adc + hil::adc::AdcHighSpeed + 'a> Adc<'a, A> {
                 // begin sampling
                 self.using_app_buf1.set(true);
                 self.samples_remaining.set(request_len - len1 - len2);
+                self.samples_outstanding.set(len1 + len2);
                 self.adc.sample_highspeed(chan, frequency, buf1, len1, buf2, len2)
             })
         });
@@ -292,6 +297,7 @@ impl<'a, A: hil::adc::Adc + hil::adc::AdcHighSpeed + 'a> Adc<'a, A> {
             self.active.set(false);
             self.mode.set(AdcMode::NoMode);
             self.samples_remaining.set(0);
+            self.samples_outstanding.set(0);
 
             return res;
         }
@@ -326,8 +332,10 @@ impl<'a, A: hil::adc::Adc + hil::adc::AdcHighSpeed + 'a> Adc<'a, A> {
 
         // cannot continuously sample without two buffers
         let mut app_buf_length = 0;
+        let mut next_app_buf_length = 0;
         let exists = self.app_state.map_or(false, |state| {
             app_buf_length = state.app_buf1.as_mut().map_or(0, |buf| buf.len());
+            next_app_buf_length = state.app_buf2.as_mut().map_or(0, |buf| buf.len());
             state.app_buf1.is_some() && state.app_buf2.is_some()
         });
         if !exists {
@@ -343,24 +351,39 @@ impl<'a, A: hil::adc::Adc + hil::adc::AdcHighSpeed + 'a> Adc<'a, A> {
         // start a continuous sample
         let res = self.adc_buf1.take().map_or(ReturnCode::EBUSY, |buf1| {
             self.adc_buf2.take().map_or(ReturnCode::EBUSY, move |buf2| {
-                // determine request length
-                let request_len = app_buf_length / 2;
+
+                // determine request lengths
+                let samples_needed = app_buf_length / 2;
+                let next_samples_needed = next_app_buf_length / 2;
+
+                // determine request lengths
                 let len1;
                 let len2;
-                if request_len <= buf1.len() {
-                    len1 = app_buf_length;
-                    len2 = 0;
-                } else if request_len <= (buf1.len() + buf2.len()) {
+                if samples_needed <= buf1.len() {
+                    // we can fit the entire app_buffer request in the first buffer. The second
+                    // buffer will be used for the next app_buffer
+                    len1 = samples_needed;
+                    len2 = cmp::min(next_samples_needed, buf2.len());
+                    self.samples_remaining.set(0);
+                    self.samples_outstanding.set(len1);
+
+                } else if samples_needed <= (buf1.len() + buf2.len()) {
+                    // we can fit the entire app_buffer request between the two buffers
                     len1 = buf1.len();
-                    len2 = request_len - buf1.len();
+                    len2 = samples_needed - buf1.len();
+                    self.samples_remaining.set(0);
+                    self.samples_outstanding.set(len1 + len2);
+
                 } else {
+                    // the app_buffer is larger than both buffers, so just request max lengths
                     len1 = buf1.len();
                     len2 = buf2.len();
+                    self.samples_remaining.set(samples_needed - len1 - len2);
+                    self.samples_outstanding.set(len1 + len2);
                 }
 
                 // begin sampling
                 self.using_app_buf1.set(true);
-                self.samples_remaining.set(request_len - len1 - len2);
                 self.adc.sample_highspeed(chan, frequency, buf1, len1, buf2, len2)
             })
         });
@@ -369,6 +392,7 @@ impl<'a, A: hil::adc::Adc + hil::adc::AdcHighSpeed + 'a> Adc<'a, A> {
             self.active.set(false);
             self.mode.set(AdcMode::NoMode);
             self.samples_remaining.set(0);
+            self.samples_outstanding.set(0);
 
             return res;
         }
@@ -466,40 +490,108 @@ impl<'a, A: hil::adc::Adc + hil::adc::AdcHighSpeed + 'a> hil::adc::HighSpeedClie
                     next_app_buf = state.app_buf1.as_ref();
                 }
 
-                // do we still need to request more samples?
-                let finished;
-                if self.samples_remaining.get() > 0 {
-                    // we need to receive more samples
-                    finished = false;
+                // update count of outstanding sample requests
+                self.samples_outstanding.set(self.samples_outstanding.get() - length);
 
-                    // provide a new buffer
+                // provide a new buffer and length request to the ADC if necessary. If we haven't
+                // received enough samples for the current app_buffer, we may need to place more
+                // requests. If we have received enough, but are in continuous mode, we should
+                // place a request for the next app_buffer. This is all unfortunately made more
+                // complicated by the fact that there is always one outstanding request to the ADC.
+                let perform_callback;
+                if self.samples_remaining.get() == 0 {
+                    // we have already placed outstanding requests for all the samples needed to
+                    // fill the current app_buffer
+
+                    if self.samples_outstanding.get() == 0 {
+                        // and the samples we just received are the last ones we need
+                        perform_callback = true;
+
+                        if self.mode.get() == AdcMode::ContinuousBuffer {
+                            // it's time to switch to the next app_buffer, but there's already an
+                            // outstanding request to the ADC for the next app_buffer that was
+                            // placed last time, so we need to account for that
+                            let samples_needed = next_app_buf.map_or(0, |buf| buf.len() / 2);
+                            self.samples_remaining.set(
+                                samples_needed - self.next_samples_outstanding.get());
+                            self.samples_outstanding.set(self.next_samples_outstanding.get());
+                            self.using_app_buf1.set(!self.using_app_buf1.get());
+
+                            // we also need to place our next request, however the outstanding
+                            // request already placed for the next app_buffer might have completed
+                            // it! So we have to account for that case
+                            if self.samples_remaining.get() == 0 {
+                                // oh boy. We actually need to place a request for the next next
+                                // app_buffer (which is actually the current app_buf, but try not
+                                // to think about that...). In practice, this should be a pretty
+                                // uncommon case to hit, only occurring if the length of the app
+                                // buffers are smaller than the length of the adc buffers, which is
+                                // unsustainable at high sampling frequencies
+                                let next_next_app_buf = &app_buf;
+
+                                // provide a new buffer. However, we cannot currently update state
+                                // since the next app_buffer still has a request outstanding. We'll
+                                // just make a request and handle the state updating on next
+                                // callback
+                                self.take_and_map_buffer(|adc_buf| {
+                                    let samples_needed =
+                                        next_next_app_buf.as_ref().map_or(0, |buf| buf.len() / 2);
+                                    let request_len = cmp::min(samples_needed, adc_buf.len());
+                                    self.next_samples_outstanding.set(request_len);
+                                    self.adc.provide_buffer(adc_buf, request_len);
+                                });
+
+                            } else {
+                                // okay, we still need more samples for the next app_buffer
+
+                                // provide a new buffer and update state
+                                self.take_and_map_buffer(|adc_buf| {
+                                    let request_len =
+                                        cmp::min(self.samples_remaining.get(), adc_buf.len());
+                                    self.samples_remaining.set(
+                                        self.samples_remaining.get() - request_len);
+                                    self.samples_outstanding.set(
+                                        self.samples_outstanding.get() + request_len);
+                                    self.adc.provide_buffer(adc_buf, request_len);
+                                });
+                            }
+                        }
+
+                    } else {
+                        // but there are still outstanding samples for the current app_buffer
+                        // (actually exactly one request, the one the ADC is currently acting on)
+                        perform_callback = false;
+
+                        if self.mode.get() == AdcMode::ContinuousBuffer {
+                            // we're in continuous mode, so we need to start the first request for
+                            // the next app_buffer
+
+                            // provide a new buffer. However, we cannot currently update state
+                            // since the current app_buffer still has a request outstanding. We'll
+                            // just make a request and handle the state updating on next callback
+                            self.take_and_map_buffer(|adc_buf| {
+                                let samples_needed = next_app_buf.map_or(0, |buf| buf.len() / 2);
+                                let request_len = cmp::min(samples_needed, adc_buf.len());
+                                self.next_samples_outstanding.set(request_len);
+                                self.adc.provide_buffer(adc_buf, request_len);
+                            });
+                        }
+                    }
+
+                } else {
+                    // we need to get more samples from the current app_buffer
+                    perform_callback = false;
+
+                    // provide a new buffer and update state
                     self.take_and_map_buffer(|adc_buf| {
                         let request_len = cmp::min(self.samples_remaining.get(), adc_buf.len());
                         self.samples_remaining.set(self.samples_remaining.get() - request_len);
+                        self.samples_outstanding.set(self.samples_outstanding.get() + request_len);
                         self.adc.provide_buffer(adc_buf, request_len);
                     });
-
-                } else {
-                    // we've completed the current app_buffer
-                    finished = true;
-
-                    // in ContinuousBuffer mode, provide a new buffer anyways
-                    if self.mode.get() == AdcMode::ContinuousBuffer {
-                        // update samples remaining for new app buffer
-                        // we don't update the buffer offset yet since we haven't copied over data
-                        let next_buf_len = next_app_buf.map_or(0, |buf| buf.len());
-                        self.samples_remaining.set((next_buf_len / 2));
-
-                        // provide a new buffer
-                        // set length based on samples remaining in new app buffer
-                        self.take_and_map_buffer(|adc_buf| {
-                            let request_len = cmp::min(self.samples_remaining.get(), adc_buf.len());
-                            self.samples_remaining.set(self.samples_remaining.get() - request_len);
-                            self.adc.provide_buffer(adc_buf, request_len);
-                        });
-                    }
                 }
 
+                // next we should copy bytes to the app buffer
                 app_buf.map(move |app_buf| {
                     // copy bytes to app buffer
                     // first, regain ownership of the buffer and then iterate over the data
@@ -529,8 +621,8 @@ impl<'a, A: hil::adc::Adc + hil::adc::AdcHighSpeed + 'a> hil::adc::HighSpeedClie
                     });
 
                     // if the app_buffer is filled, perform callback
-                    if finished {
-                        // perform callback
+                    if perform_callback {
+                        // actually schedule the callback
                         self.callback.get().map(|mut callback| {
                             let len_chan = ((app_buf.len() / 2) << 8) | (self.channel.get() & 0xFF);
                             callback.schedule(self.mode.get() as usize, len_chan, app_buf.ptr() as usize);
@@ -542,10 +634,13 @@ impl<'a, A: hil::adc::Adc + hil::adc::AdcHighSpeed + 'a> hil::adc::HighSpeedClie
                             self.mode.set(AdcMode::NoMode);
                             self.app_buf_offset.set(0);
 
+                            // need to actually stop sampling
+                            self.adc.stop_sampling();
+
                         } else {
-                            // if the mode is ContinuousBuffer, we've just switched app buffers
+                            // if the mode is ContinuousBuffer, we've just switched app buffers.
+                            // Reset our offset to zero
                             self.app_buf_offset.set(0);
-                            self.using_app_buf1.set(!self.using_app_buf1.get());
                         }
                     }
                 });

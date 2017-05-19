@@ -323,8 +323,10 @@ pub unsafe fn reset_handler() {
     let adc = static_init!(
         capsules::adc::Adc<'static, sam4l::adc::Adc>,
         capsules::adc::Adc::new(&mut sam4l::adc::ADC0, adc_channels,
-                                &mut capsules::adc::ADC_BUFFER1, &mut capsules::adc::ADC_BUFFER2),
-        768/8);
+                                &mut capsules::adc::ADC_BUFFER1,
+                                &mut capsules::adc::ADC_BUFFER2,
+                                &mut capsules::adc::ADC_BUFFER3),
+        896/8);
     sam4l::adc::ADC0.set_client(adc);
 
     // # GPIO
