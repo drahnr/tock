@@ -85,6 +85,76 @@ static void adc_cb(int callback_type,
   result->fired = true;
 }
 
+// function pointers used for wrapping adc callbacks with the `adc_routing_cb`
+// below
+static void(*single_sample_callback)(uint8_t, uint16_t, void*) = NULL;
+static void(*continuous_sample_callback)(uint8_t, uint16_t, void*) = NULL;
+static void(*buffered_sample_callback)(uint8_t, uint32_t, uint16_t*, void*) = NULL;
+static void(*continuous_buffered_sample_callback)(uint8_t, uint32_t, uint16_t*, void*) = NULL;
+
+// Internal callback for routing to operation-specific callbacks
+//
+// callback_type - number indicating which type of callback occurred
+// arg1, arg2 - meaning varies based on callback_type
+// callback_args - user data passed into the set_callback function
+//
+// Possible callbacks
+// SingleSample: single sample operation is complete
+//      arg1 - channel number that collected sample corresponds to
+//      arg2 - sample value
+// MultipleSample: sampling a buffer worth of data is complete
+//      arg1 - channel in lower 8 bits,
+//             number of samples collected in upper 24 bits
+//      arg2 - pointer to buffer filled with samples
+// ContinuousSample: a buffer of sample data is ready
+//      arg1 - channel in lower 8 bits,
+//             number of samples collected in upper 24 bits
+//      arg2 - pointer to buffer filled with samples
+static void adc_routing_cb(int callback_type,
+                   int arg1,
+                   int arg2,
+                   void* callback_args) {
+
+  switch (callback_type) {
+    case SingleSample:
+      if (single_sample_callback) {
+        uint8_t channel = (uint8_t)arg1;
+        uint16_t sample = (uint16_t)arg2;
+        single_sample_callback(channel, sample, callback_args);
+      }
+      break;
+
+    case ContinuousSample:
+      if (continuous_sample_callback) {
+        uint8_t channel = (uint8_t)arg1;
+        uint16_t sample = (uint16_t)arg2;
+        continuous_sample_callback(channel, sample, callback_args);
+      }
+      break;
+
+    case SingleBuffer:
+      if (buffered_sample_callback) {
+        uint8_t channel = (uint8_t)(arg1 & 0xFF);
+        uint32_t length = ((arg1 >> 8) & 0xFFFFFF);
+        uint16_t* buffer = (uint16_t*)arg2;
+        buffered_sample_callback(channel, length, buffer, callback_args);
+      }
+      break;
+
+    case ContinuousBuffer:
+      if (continuous_buffered_sample_callback) {
+        uint8_t channel = (uint8_t)(arg1 & 0xFF);
+        uint32_t length = ((arg1 >> 8) & 0xFFFFFF);
+        uint16_t* buffer = (uint16_t*)arg2;
+        continuous_buffered_sample_callback(channel, length, buffer, callback_args);
+      }
+      break;
+  }
+}
+
+
+// ***** System Call Interface *****
+
 int adc_set_callback(subscribe_cb callback, void* callback_args) {
   return subscribe(DRIVER_NUM_ADC, 0, callback, callback_args);
 }
@@ -129,6 +199,36 @@ int adc_continuous_buffered_sample(uint8_t channel, uint32_t frequency) {
 int adc_stop_sampling(void) {
   return command(DRIVER_NUM_ADC, 5, 0);
 }
+
+
+// ***** Callback Wrappers *****
+
+int adc_set_single_sample_callback(void(*callback)(uint8_t, uint16_t, void*),
+                                   void* callback_args) {
+  single_sample_callback = callback;
+  return adc_set_callback(adc_routing_cb, callback_args);
+}
+
+int adc_set_continuous_sample_callback(void(*callback)(uint8_t, uint16_t, void*),
+                                       void* callback_args) {
+  continuous_sample_callback = callback;
+  return adc_set_callback(adc_routing_cb, callback_args);
+}
+
+int adc_set_buffered_sample_callback(void(*callback)(uint8_t, uint32_t, uint16_t*, void*),
+                                     void* callback_args) {
+  buffered_sample_callback = callback;
+  return adc_set_callback(adc_routing_cb, callback_args);
+}
+
+int adc_set_continuous_buffered_sample_callback(void(*callback)(uint8_t, uint32_t, uint16_t*, void*),
+                                                void* callback_args){
+  continuous_buffered_sample_callback = callback;
+  return adc_set_callback(adc_routing_cb, callback_args);
+}
+
+
+// ***** Synchronous Calls *****
 
 int adc_sample_sync(uint8_t channel, uint16_t* sample) {
   int err;

@@ -81,6 +81,51 @@ int adc_continuous_buffered_sample(uint8_t channel, uint32_t frequency);
 int adc_stop_sampling(void);
 
 
+// ***** Callback Wrappers *****
+
+// set the function called by the ADC when a single_sample operation
+// completes.
+//
+// callback - pointer to function to be called
+//      uint8_t - channel the sample was taken on
+//      uint16_t - sample value
+//      void* - user pointer to pass to callback
+int adc_set_single_sample_callback(void(*callback)(uint8_t, uint16_t, void*),
+                                   void* callback_args);
+
+// set the function called by the ADC when a continuous_sample operation
+// completes.
+//
+// callback - pointer to function to be called
+//      uint8_t - channel the sample was taken on
+//      uint16_t - sample value
+//      void* - user pointer to pass to callback
+int adc_set_continuous_sample_callback(void(*callback)(uint8_t, uint16_t, void*),
+                                       void* callback_args);
+
+// set the function called by the ADC when a buffered_sample operation
+// completes.
+//
+// callback - pointer to function to be called
+//      uint8_t - channel the sample was taken on
+//      uint32_t - number of samples
+//      uint16_t* - pointer to buffer containing samples
+//      void* - user pointer to pass to callback
+int adc_set_buffered_sample_callback(void(*callback)(uint8_t, uint32_t, uint16_t*, void*),
+                                     void* callback_args);
+
+// set the function called by the ADC when a continuous_buffered_sample operation
+// completes.
+//
+// callback - pointer to function to be called
+//      uint8_t - channel the sample was taken on
+//      uint32_t - number of samples
+//      uint16_t* - pointer to buffer containing samples
+//      void* - user pointer to pass to callback
+int adc_set_continuous_buffered_sample_callback(void(*callback)(uint8_t, uint32_t, uint16_t*, void*),
+                                                void* callback_args);
+
+
 // ***** Synchronous Calls *****
 
 // request a single analog sample

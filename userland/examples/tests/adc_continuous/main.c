@@ -25,73 +25,75 @@
 static uint16_t sample_buffer1[BUF_SIZE] = {0};
 static uint16_t sample_buffer2[BUF_SIZE] = {0};
 
-// state
-static uint8_t counter = 0;
+static void continuous_sample_cb(uint8_t channel,
+                                 uint16_t sample,
+                                 __attribute__ ((unused)) void* callback_args) {
 
-static void adc_cb(int callback_type,
-    int arg1,
-    int arg2,
-    __attribute__ ((unused)) void* callback_args) {
+  // single ADC sample is ready
+  static uint8_t counter = 0;
 
-  if (callback_type == ContinuousSample) {
-    // single ADC sample is ready
-    uint8_t channel = arg1 & 0xFF;
-    uint16_t sample = (uint16_t)(arg2 * 3300 / 4095);
+  // print data
+  uint16_t voltage = (uint16_t)(sample * 3300 / 4095);
+  printf("Channel: %u\tValue: %u\n", channel, voltage);
 
-    printf("Channel: %u\tValue: %u\n", channel, sample);
-
-  } else if (callback_type == ContinuousBuffer) {
-    // buffer of ADC samples is ready
-
-    // parse out arguments
-    uint8_t channel = arg1 & 0xFF;
-    uint32_t length = (arg1 >> 8) & 0xFFFFFF;
-    uint16_t* buf_ptr = (uint16_t*)arg2;
-
-    // calculate and print statistics about the data
-    uint32_t sum = 0;
-    uint16_t min = 0xFFFF;
-    uint16_t max = 0;
-    for (uint32_t i=0; i<length; i++) {
-      uint16_t sample = (buf_ptr[i] * 3300 / 4095);
-      sum += sample;
-      if (sample < min) {
-        min = sample;
-      }
-      if (sample > max) {
-        max = sample;
-      }
-    }
-    printf("Channel: %u\tCount: %d\tAvg: %lu\tMin: %u\tMax: %u\n",
-        channel, BUF_SIZE, sum/BUF_SIZE, min, max);
-
-  } else {
-    printf("Bad callback type\n");
-  }
-
-  // switch between single and buffered sampling
+  // determine when to switch sampling method
   counter++;
   if (counter == 10) {
-      // stop single sampling
-      int err = adc_stop_sampling();
-      if (err < SUCCESS) {
-        printf("Failed to stop sampling: %d\n", err);
-        return;
-      }
-
-      // start buffered sampling
-      printf("Beginning buffered sampling on channel %d at %d Hz\n",
-          ADC_CHANNEL, ADC_HIGHSPEED_FREQUENCY);
-      err = adc_continuous_buffered_sample(ADC_CHANNEL, ADC_HIGHSPEED_FREQUENCY);
-      if (err < SUCCESS) {
-        printf("continuous buffered sample error: %d\n", err);
-        return;
-      }
-
-  } else if (counter == 20) {
-    // stop buffered sampling
     counter = 0;
+
+    // stop single sampling
     int err = adc_stop_sampling();
+    if (err < SUCCESS) {
+      printf("Failed to stop sampling: %d\n", err);
+      return;
+    }
+
+    // start buffered sampling
+    printf("Beginning buffered sampling on channel %d at %d Hz\n",
+        ADC_CHANNEL, ADC_HIGHSPEED_FREQUENCY);
+    err = adc_continuous_buffered_sample(ADC_CHANNEL, ADC_HIGHSPEED_FREQUENCY);
+    if (err < SUCCESS) {
+      printf("continuous buffered sample error: %d\n", err);
+      return;
+    }
+  }
+}
+
+static void continuous_buffered_sample_cb(uint8_t channel,
+                                          uint32_t length,
+                                          uint16_t* buf_ptr,
+                                          __attribute__ ((unused)) void* callback_args) {
+  // buffer of ADC samples is ready
+  static uint8_t counter = 0;
+
+  // calculate and print statistics about the data
+  uint32_t sum = 0;
+  uint16_t min = 0xFFFF;
+  uint16_t max = 0;
+  for (uint32_t i=0; i<length; i++) {
+    uint16_t sample = (buf_ptr[i] * 3300 / 4095);
+    sum += sample;
+    if (sample < min) {
+      min = sample;
+    }
+    if (sample > max) {
+      max = sample;
+    }
+  }
+  printf("Channel: %u\tCount: %d\tAvg: %lu\tMin: %u\tMax: %u\n",
+      channel, BUF_SIZE, sum/BUF_SIZE, min, max);
+
+  // determine when to switch sampling method
+  counter++;
+  if (counter == 10) {
+    counter = 0;
+
+    // stop single sampling
+    int err = adc_stop_sampling();
+    if (err < SUCCESS) {
+      printf("Failed to stop sampling: %d\n", err);
+      return;
+    }
 
     // start single sampling
     printf("Beginning continuous sampling on channel %d at %d Hz\n",
@@ -115,10 +117,15 @@ int main(void) {
   }
   printf("ADC driver exists with %d channels\n", adc_channel_count());
 
-  // set ADC callback
-  err = adc_set_callback(adc_cb, NULL);
+  // set ADC callbacks
+  err = adc_set_continuous_sample_callback(continuous_sample_cb, NULL);
   if (err < SUCCESS) {
-    printf("set callback error: %d\n", err);
+    printf("set continuous sample callback error: %d\n", err);
+    return -1;
+  }
+  err = adc_set_continuous_buffered_sample_callback(continuous_buffered_sample_cb, NULL);
+  if (err < SUCCESS) {
+    printf("set continuous buffered sample callback error: %d\n", err);
     return -1;
   }
 
