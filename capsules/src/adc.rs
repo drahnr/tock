@@ -36,8 +36,8 @@ pub struct Adc<'a, A: hil::adc::Adc + hil::adc::AdcHighSpeed + 'a> {
     adc_buf3: TakeCell<'static, [u16]>,
 }
 
-/// ADC modes, used to track internal state and to signify to applications which state a callback
-/// came from
+/// ADC modes, used to track internal state and to signify to applications which
+/// state a callback came from
 #[derive(Copy,Clone,PartialEq)]
 enum AdcMode {
     NoMode = -1,
@@ -54,8 +54,9 @@ pub struct AppState {
 }
 
 /// Buffers to use for DMA transfers
-/// The size is chosen somewhat arbitrarily, but has been tested. At 175000 Hz, buffers need to be
-/// swapped every 70 us and copied over before the next swap. In testing, it seems to keep up fine.
+/// The size is chosen somewhat arbitrarily, but has been tested. At 175000 Hz,
+/// buffers need to be swapped every 70 us and copied over before the next
+/// swap. In testing, it seems to keep up fine.
 pub static mut ADC_BUFFER1: [u16; 128] = [0; 128];
 pub static mut ADC_BUFFER2: [u16; 128] = [0; 128];
 pub static mut ADC_BUFFER3: [u16; 128] = [0; 128];
@@ -110,7 +111,8 @@ impl<'a, A: hil::adc::Adc + hil::adc::AdcHighSpeed + 'a> Adc<'a, A> {
     }
 
     /// Store a buffer we've regained ownership of and return a handle to it
-    /// The handle can have `map` called on it in order to process the data in the buffer
+    /// The handle can have `map` called on it in order to process the data in
+    /// the buffer
     ///
     /// buf - buffer to be stored
     fn replace_buffer(&self, buf: &'static mut [u16]) -> &TakeCell<'static, [u16]> {
@@ -223,8 +225,8 @@ impl<'a, A: hil::adc::Adc + hil::adc::AdcHighSpeed + 'a> Adc<'a, A> {
     }
 
     /// Collect a buffer-full of analog samples
-    /// Samples are collected into the first app buffer provided. The number of samples collected
-    /// is equal to the size of the buffer "allowed"
+    /// Samples are collected into the first app buffer provided. The number of
+    /// samples collected is equal to the size of the buffer "allowed"
     ///
     /// channel - index into `channels` array, which channel to sample
     /// frequency - number of samples per second to collect
@@ -302,8 +304,9 @@ impl<'a, A: hil::adc::Adc + hil::adc::AdcHighSpeed + 'a> Adc<'a, A> {
     }
 
     /// Collect analog samples continuously
-    /// Fills one "allowed" application buffer at a time and then swaps to filling the second
-    /// buffer. Callbacks occur when the in use "allowed" buffer fills
+    /// Fills one "allowed" application buffer at a time and then swaps to
+    /// filling the second buffer. Callbacks occur when the in use "allowed"
+    /// buffer fills
     ///
     /// channel - index into `channels` array, which channel to sample
     /// frequency - number of samples per second to collect
@@ -356,22 +359,25 @@ impl<'a, A: hil::adc::Adc + hil::adc::AdcHighSpeed + 'a> Adc<'a, A> {
                 let len1;
                 let len2;
                 if samples_needed <= buf1.len() {
-                    // we can fit the entire app_buffer request in the first buffer. The second
-                    // buffer will be used for the next app_buffer
+                    // we can fit the entire app_buffer request in the first
+                    // buffer. The second buffer will be used for the next
+                    // app_buffer
                     len1 = samples_needed;
                     len2 = cmp::min(next_samples_needed, buf2.len());
                     self.samples_remaining.set(0);
                     self.samples_outstanding.set(len1);
 
                 } else if samples_needed <= (buf1.len() + buf2.len()) {
-                    // we can fit the entire app_buffer request between the two buffers
+                    // we can fit the entire app_buffer request between the two
+                    // buffers
                     len1 = buf1.len();
                     len2 = samples_needed - buf1.len();
                     self.samples_remaining.set(0);
                     self.samples_outstanding.set(len1 + len2);
 
                 } else {
-                    // the app_buffer is larger than both buffers, so just request max lengths
+                    // the app_buffer is larger than both buffers, so just
+                    // request max lengths
                     len1 = buf1.len();
                     len2 = buf2.len();
                     self.samples_remaining.set(samples_needed - len1 - len2);
@@ -397,17 +403,19 @@ impl<'a, A: hil::adc::Adc + hil::adc::AdcHighSpeed + 'a> Adc<'a, A> {
     }
 
     /// Stops sampling the ADC
-    /// Any active operation by the ADC is canceled. In single-sample mode, no callback will be
-    /// triggered. In buffer-sample mode, a `sampling_complete` callback will occur to return
-    /// ownership of buffers to the capsule.
+    /// Any active operation by the ADC is canceled. In single-sample mode, no
+    /// callback will be triggered. In buffer-sample mode, a
+    /// `sampling_complete` callback will occur to return ownership of buffers
+    /// to the capsule.
     fn stop_sampling(&self) -> ReturnCode {
         if !self.active.get() || self.mode.get() == AdcMode::NoMode {
             // already inactive!
             return ReturnCode::SUCCESS;
         }
 
-        // we're going to leave active as true here, but set ourselves to NoMode so the client
-        // handler functions will clean up state properly when the ADC is ready again
+        // we're going to leave active as true here, but set ourselves to NoMode
+        // so the client handler functions will clean up state properly when the
+        // ADC is ready again
         self.mode.set(AdcMode::NoMode);
         self.app_buf_offset.set(0);
 
@@ -446,7 +454,8 @@ impl<'a, A: hil::adc::Adc + hil::adc::AdcHighSpeed + 'a> hil::adc::Client for Ad
             });
 
         } else {
-            // operation probably canceled. Make sure state is consistent. No callback
+            // operation probably canceled. Make sure state is consistent. No
+            // callback
             self.active.set(false);
             self.mode.set(AdcMode::NoMode);
         }
@@ -456,14 +465,15 @@ impl<'a, A: hil::adc::Adc + hil::adc::AdcHighSpeed + 'a> hil::adc::Client for Ad
 /// Callbacks from the High Speed ADC driver
 impl<'a, A: hil::adc::Adc + hil::adc::AdcHighSpeed + 'a> hil::adc::HighSpeedClient for Adc<'a, A> {
     /// Internal buffer has filled from a buffered sampling operation.
-    /// Copies data over to application buffer, determines if more data is needed, and performs a
-    /// callback to the application if ready. If continuously sampling, also swaps application
-    /// buffers and continues sampling when neccessary. If only filling a single buffer, stops
+    /// Copies data over to application buffer, determines if more data is
+    /// needed, and performs a callback to the application if ready. If
+    /// continuously sampling, also swaps application buffers and continues
+    /// sampling when neccessary. If only filling a single buffer, stops
     /// sampling operation when the application buffer is full.
     ///
     /// buf - internal buffer filled with analog samples
-    /// length - number of valid samples in the buffer, guaranteed to be less than or equal to
-    ///          buffer length
+    /// length - number of valid samples in the buffer, guaranteed to be less
+    ///          than or equal to buffer length
     fn samples_ready(&self, buf: &'static mut [u16], length: usize) {
 
         // do we expect a buffer?
@@ -474,8 +484,8 @@ impl<'a, A: hil::adc::Adc + hil::adc::AdcHighSpeed + 'a> hil::adc::HighSpeedClie
             // we did expect a buffer. Determine the current application state
             self.app_state.map(|state| {
 
-                // determine which app buffer to copy data into and which is next up if we're in
-                // continuous mode
+                // determine which app buffer to copy data into and which is
+                // next up if we're in continuous mode
                 let app_buf;
                 let next_app_buf;
                 if self.using_app_buf1.get() {
@@ -489,46 +499,55 @@ impl<'a, A: hil::adc::Adc + hil::adc::AdcHighSpeed + 'a> hil::adc::HighSpeedClie
                 // update count of outstanding sample requests
                 self.samples_outstanding.set(self.samples_outstanding.get() - length);
 
-                // provide a new buffer and length request to the ADC if necessary. If we haven't
-                // received enough samples for the current app_buffer, we may need to place more
-                // requests. If we have received enough, but are in continuous mode, we should
-                // place a request for the next app_buffer. This is all unfortunately made more
-                // complicated by the fact that there is always one outstanding request to the ADC.
+                // provide a new buffer and length request to the ADC if
+                // necessary. If we haven't received enough samples for the
+                // current app_buffer, we may need to place more requests. If we
+                // have received enough, but are in continuous mode, we should
+                // place a request for the next app_buffer. This is all
+                // unfortunately made more complicated by the fact that there is
+                // always one outstanding request to the ADC.
                 let perform_callback;
                 if self.samples_remaining.get() == 0 {
-                    // we have already placed outstanding requests for all the samples needed to
-                    // fill the current app_buffer
+                    // we have already placed outstanding requests for all the
+                    // samples needed to fill the current app_buffer
 
                     if self.samples_outstanding.get() == 0 {
-                        // and the samples we just received are the last ones we need
+                        // and the samples we just received are the last ones
+                        // we need
                         perform_callback = true;
 
                         if self.mode.get() == AdcMode::ContinuousBuffer {
-                            // it's time to switch to the next app_buffer, but there's already an
-                            // outstanding request to the ADC for the next app_buffer that was
-                            // placed last time, so we need to account for that
+                            // it's time to switch to the next app_buffer, but
+                            // there's already an outstanding request to the ADC
+                            // for the next app_buffer that was placed last
+                            // time, so we need to account for that
                             let samples_needed = next_app_buf.map_or(0, |buf| buf.len() / 2);
                             self.samples_remaining
                                 .set(samples_needed - self.next_samples_outstanding.get());
                             self.samples_outstanding.set(self.next_samples_outstanding.get());
                             self.using_app_buf1.set(!self.using_app_buf1.get());
 
-                            // we also need to place our next request, however the outstanding
-                            // request already placed for the next app_buffer might have completed
-                            // it! So we have to account for that case
+                            // we also need to place our next request, however
+                            // the outstanding request already placed for the
+                            // next app_buffer might have completed it! So we
+                            // have to account for that case
                             if self.samples_remaining.get() == 0 {
-                                // oh boy. We actually need to place a request for the next next
-                                // app_buffer (which is actually the current app_buf, but try not
-                                // to think about that...). In practice, this should be a pretty
-                                // uncommon case to hit, only occurring if the length of the app
-                                // buffers are smaller than the length of the adc buffers, which is
-                                // unsustainable at high sampling frequencies
+                                // oh boy. We actually need to place a request
+                                // for the next next app_buffer (which is
+                                // actually the current app_buf, but try not to
+                                // think about that...). In practice, this
+                                // should be a pretty uncommon case to hit, only
+                                // occurring if the length of the app buffers
+                                // are smaller than the length of the adc
+                                // buffers, which is unsustainable at high
+                                // sampling frequencies
                                 let next_next_app_buf = &app_buf;
 
-                                // provide a new buffer. However, we cannot currently update state
-                                // since the next app_buffer still has a request outstanding. We'll
-                                // just make a request and handle the state updating on next
-                                // callback
+                                // provide a new buffer. However, we cannot
+                                // currently update state since the next
+                                // app_buffer still has a request outstanding.
+                                // We'll just make a request and handle the
+                                // state updating on next callback
                                 self.take_and_map_buffer(|adc_buf| {
                                     let samples_needed = next_next_app_buf.as_ref()
                                         .map_or(0, |buf| buf.len() / 2);
@@ -538,7 +557,8 @@ impl<'a, A: hil::adc::Adc + hil::adc::AdcHighSpeed + 'a> hil::adc::HighSpeedClie
                                 });
 
                             } else {
-                                // okay, we still need more samples for the next app_buffer
+                                // okay, we still need more samples for the next
+                                // app_buffer
 
                                 // provide a new buffer and update state
                                 self.take_and_map_buffer(|adc_buf| {
@@ -554,17 +574,20 @@ impl<'a, A: hil::adc::Adc + hil::adc::AdcHighSpeed + 'a> hil::adc::HighSpeedClie
                         }
 
                     } else {
-                        // but there are still outstanding samples for the current app_buffer
-                        // (actually exactly one request, the one the ADC is currently acting on)
+                        // but there are still outstanding samples for the
+                        // current app_buffer (actually exactly one request, the
+                        // one the ADC is currently acting on)
                         perform_callback = false;
 
                         if self.mode.get() == AdcMode::ContinuousBuffer {
-                            // we're in continuous mode, so we need to start the first request for
-                            // the next app_buffer
+                            // we're in continuous mode, so we need to start the
+                            // first request for the next app_buffer
 
-                            // provide a new buffer. However, we cannot currently update state
-                            // since the current app_buffer still has a request outstanding. We'll
-                            // just make a request and handle the state updating on next callback
+                            // provide a new buffer. However, we cannot
+                            // currently update state since the current
+                            // app_buffer still has a request outstanding. We'll
+                            // just make a request and handle the state updating
+                            // on next callback
                             self.take_and_map_buffer(|adc_buf| {
                                 let samples_needed = next_app_buf.map_or(0, |buf| buf.len() / 2);
                                 let request_len = cmp::min(samples_needed, adc_buf.len());
@@ -590,16 +613,21 @@ impl<'a, A: hil::adc::Adc + hil::adc::AdcHighSpeed + 'a> hil::adc::HighSpeedClie
                 // next we should copy bytes to the app buffer
                 app_buf.map(move |app_buf| {
                     // copy bytes to app buffer
-                    // first, regain ownership of the buffer and then iterate over the data
+                    // first, regain ownership of the buffer and then iterate
+                    // over the data
                     self.replace_buffer(buf).map(|adc_buf| {
                         // The `for` commands:
-                        //  * `chunks_mut`: get sets of two bytes from the app buffer
-                        //  * `skip`: skips the already written bytes from the app buffer
-                        //  * `zip`: ties that iterator to an iterator on the adc buffer, limiting
-                        //    iteration length to the minimum of each of their lengths
-                        //  * `take`: limits us to the minimum of buffer lengths or sample length
-                        // We then split each sample into its two bytes and copy them to the app
-                        // buffer
+                        //  * `chunks_mut`: get sets of two bytes from the app
+                        //                  buffer
+                        //  * `skip`: skips the already written bytes from the
+                        //            app buffer
+                        //  * `zip`: ties that iterator to an iterator on the
+                        //           adc buffer, limiting iteration length to
+                        //           the minimum of each of their lengths
+                        //  * `take`: limits us to the minimum of buffer lengths
+                        //            or sample length
+                        // We then split each sample into its two bytes and copy
+                        // them to the app buffer
                         for (chunk, &sample) in app_buf.chunks_mut(2)
                             .skip(self.app_buf_offset.get() / 2)
                             .zip(adc_buf.iter())
@@ -612,7 +640,8 @@ impl<'a, A: hil::adc::Adc + hil::adc::AdcHighSpeed + 'a> hil::adc::HighSpeedClie
                             }
                         }
 
-                        // update our byte offset based on how many samples we copied
+                        // update our byte offset based on how many samples we
+                        // copied
                         self.app_buf_offset.set(self.app_buf_offset.get() + length * 2);
                     });
 
@@ -626,7 +655,8 @@ impl<'a, A: hil::adc::Adc + hil::adc::AdcHighSpeed + 'a> hil::adc::HighSpeedClie
                                               app_buf.ptr() as usize);
                         });
 
-                        // if the mode is SingleBuffer, the operation is complete. Clean up state
+                        // if the mode is SingleBuffer, the operation is
+                        // complete. Clean up state
                         if self.mode.get() == AdcMode::SingleBuffer {
                             self.active.set(false);
                             self.mode.set(AdcMode::NoMode);
@@ -636,8 +666,8 @@ impl<'a, A: hil::adc::Adc + hil::adc::AdcHighSpeed + 'a> hil::adc::HighSpeedClie
                             self.adc.stop_sampling();
 
                         } else {
-                            // if the mode is ContinuousBuffer, we've just switched app buffers.
-                            // Reset our offset to zero
+                            // if the mode is ContinuousBuffer, we've just
+                            // switched app buffers. Reset our offset to zero
                             self.app_buf_offset.set(0);
                         }
                     }
@@ -645,7 +675,8 @@ impl<'a, A: hil::adc::Adc + hil::adc::AdcHighSpeed + 'a> hil::adc::HighSpeedClie
             });
 
         } else {
-            // operation was likely canceled. Make sure state is consistent. No callback
+            // operation was likely canceled. Make sure state is consistent. No
+            // callback
             self.active.set(false);
             self.mode.set(AdcMode::NoMode);
             self.app_buf_offset.set(0);
@@ -655,14 +686,15 @@ impl<'a, A: hil::adc::Adc + hil::adc::AdcHighSpeed + 'a> hil::adc::HighSpeedClie
         }
     }
 
-    /// Called when sampling has been stopped or an error has occurred to return ownership of
-    /// buffers to the capsule. Both buffers should exist if an error occurred, while only the
-    /// first will exist if `stop_sampling` was called in the `samples_ready` callback.
+    /// Called when sampling has been stopped or an error has occurred to
+    /// return ownership of buffers to the capsule. Both buffers should exist
+    /// if an error occurred, while only the first will exist if
+    /// `stop_sampling` was called in the `samples_ready` callback.
     ///
     /// buf1: reference to first buffer, possibly None
     /// buf2: reference to second buffer, possibly None
-    /// error: return code representing the error which lead to this being called, SUCCESS if
-    ///        stopped instead
+    /// error: return code representing the error which lead to this being
+    ///        called, SUCCESS if stopped instead
     fn sampling_complete(&self,
                          buf1: Option<&'static mut [u16]>,
                          buf2: Option<&'static mut [u16]>,
@@ -684,7 +716,8 @@ impl<'a, A: hil::adc::Adc + hil::adc::AdcHighSpeed + 'a> hil::adc::HighSpeedClie
 
 /// Implementations of application syscalls
 impl<'a, A: hil::adc::Adc + hil::adc::AdcHighSpeed + 'a> Driver for Adc<'a, A> {
-    /// Provides access to a buffer from the application to store data in or read data from
+    /// Provides access to a buffer from the application to store data in or
+    /// read data from
     ///
     /// _appid - application identifier, unused
     /// allow_num - which allow call this is
@@ -715,7 +748,8 @@ impl<'a, A: hil::adc::Adc + hil::adc::AdcHighSpeed + 'a> Driver for Adc<'a, A> {
     /// Provides a callback which can be used to signal the application
     ///
     /// subscribe_num - which subscribe call this is
-    /// callback - callback object which can be scheduled to signal the application
+    /// callback - callback object which can be scheduled to signal the
+    ///            application
     fn subscribe(&self, subscribe_num: usize, callback: Callback) -> ReturnCode {
         match subscribe_num {
             // subscribe to ADC sample done (from all types of sampling)
