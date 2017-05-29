@@ -123,6 +123,7 @@ pub struct Adc {
     rx_length: Cell<usize>,
     next_dma_buffer: TakeCell<'static, [u16]>,
     next_dma_length: Cell<usize>,
+    stopped_buffer: TakeCell<'static, [u16]>,
 
     // ADC client to send sample complete notifications to
     client: Cell<Option<&'static EverythingClient>>,
@@ -186,6 +187,7 @@ impl Adc {
             rx_length: Cell::new(0),
             next_dma_buffer: TakeCell::empty(),
             next_dma_length: Cell::new(0),
+            stopped_buffer: TakeCell::empty(),
 
             // higher layer to send responses to
             client: Cell::new(None),
@@ -204,24 +206,6 @@ impl Adc {
     /// rx_dma - reference to the DMA channel the ADC should use
     pub fn set_dma(&self, rx_dma: &'static dma::DMAChannel) {
         self.rx_dma.set(Some(rx_dma));
-    }
-
-    /// Return buffers to the client if an error occurs.
-    /// Used internally and only valid for AdcHighSpeed implementations.
-    ///
-    /// buf1 - first buffer to return, may be None
-    /// buf2 - second buffer to return, may be None
-    /// errcode - what error occurred leading to the buffers being returned
-    fn return_buffers(&self,
-                      buf1: Option<&'static mut [u16]>,
-                      buf2: Option<&'static mut [u16]>,
-                      errcode: ReturnCode)
-                      -> ReturnCode {
-
-        // something went wrong, return the buffers to the client
-        self.client.get().map(move |client| { client.sampling_complete(buf1, buf2, errcode); });
-
-        errcode
     }
 
     /// Interrupt handler for the ADC.
@@ -521,40 +505,19 @@ impl hil::adc::Adc for Adc {
                 rx_dma.disable();
                 dma_buf
             });
-
-            // if there was a buffer, send it to the client. It will be
-            // partially invalid if it exists, but they were the ones who wanted
-            // to stop in a hurry. In the common case, this is either called
-            // after a `samples_ready` call in which case this map will fizzle,
-            // or to stop a non-buffered ADC operation, in which case no buffer
-            // will exist anyways.
-
-            // return buffers to client
-            self.client.get().map(|client| {
-                dma_buffer.map_or_else(|| {
-                    // there was no buffer in the DMA, return the next one we
-                    // were holding (if any)
-                    client.sampling_complete(self.next_dma_buffer.take(), None,
-                            ReturnCode::SUCCESS);
-
-                },
-                                       |dma_buf| {
-                    // there was a buffer in the DMA return it and the one we
-                    // were holding (if any)
-
-                    // change buffer back into a [u16]
-                    // the buffer was originally a [u16] so this should be okay
-                    let buf_ptr =
-                        unsafe { mem::transmute::<*mut u8, *mut u16>(dma_buf.as_mut_ptr()) };
-                    let buf = unsafe { slice::from_raw_parts_mut(buf_ptr, dma_buf.len() / 2) };
-
-                    // return any buffers we still have
-                    client.sampling_complete(Some(buf),
-                                             self.next_dma_buffer.take(),
-                                             ReturnCode::SUCCESS);
-                });
-            });
             self.rx_length.set(0);
+
+            // store the buffer if it exists
+            dma_buffer.map(|dma_buf| {
+                // change buffer back into a [u16]
+                // the buffer was originally a [u16] so this should be okay
+                let buf_ptr = unsafe { mem::transmute::<*mut u8, *mut u16>(dma_buf.as_mut_ptr()) };
+                let buf = unsafe { slice::from_raw_parts_mut(buf_ptr, dma_buf.len() / 2) };
+
+                // we'll place it here so we can return it to the higher level
+                // later in a `retrieve_buffers` call
+                self.stopped_buffer.replace(buf);
+            });
 
             ReturnCode::SUCCESS
         }
@@ -583,25 +546,25 @@ impl hil::adc::AdcHighSpeed for Adc {
                         length1: usize,
                         buffer2: &'static mut [u16],
                         length2: usize)
-                        -> ReturnCode {
+                        -> (ReturnCode, Option<&'static mut [u16]>, Option<&'static mut [u16]>) {
         let regs: &mut AdcRegisters = unsafe { mem::transmute(self.registers) };
 
         if !self.enabled.get() {
-            self.return_buffers(Some(buffer1), Some(buffer2), ReturnCode::EOFF)
+            (ReturnCode::EOFF, Some(buffer1), Some(buffer2))
 
         } else if self.active.get() {
             // only one sample at a time
-            self.return_buffers(Some(buffer1), Some(buffer2), ReturnCode::EBUSY)
+            (ReturnCode::EBUSY, Some(buffer1), Some(buffer2))
 
         } else if frequency <= (self.adc_clk_freq.get() / (0xFFFF + 1)) || frequency > 250000 {
             // can't sample faster than the max sampling frequency or slower
             // than the timer can be set to
-            self.return_buffers(Some(buffer1), Some(buffer2), ReturnCode::EINVAL)
+            (ReturnCode::EINVAL, Some(buffer1), Some(buffer2))
 
         } else if length1 == 0 {
             // at least need a valid length for the for the first buffer full of
             // samples. Otherwise, what are we doing here?
-            self.return_buffers(Some(buffer1), Some(buffer2), ReturnCode::EINVAL)
+            (ReturnCode::EINVAL, Some(buffer1), Some(buffer2))
 
         } else {
             self.active.set(true);
@@ -661,7 +624,7 @@ impl hil::adc::AdcHighSpeed for Adc {
             // start timer
             regs.cr.set(0x04);
 
-            ReturnCode::SUCCESS
+            (ReturnCode::SUCCESS, None, None)
         }
     }
 
@@ -670,21 +633,24 @@ impl hil::adc::AdcHighSpeed for Adc {
     ///
     /// buf - buffer to fill with samples
     /// length - number of samples to collect (up to buffer length)
-    fn provide_buffer(&self, buf: &'static mut [u16], length: usize) -> ReturnCode {
+    fn provide_buffer(&self,
+                      buf: &'static mut [u16],
+                      length: usize)
+                      -> (ReturnCode, Option<&'static mut [u16]>) {
         if !self.enabled.get() {
-            self.return_buffers(Some(buf), None, ReturnCode::EOFF)
+            (ReturnCode::EOFF, Some(buf))
 
         } else if !self.active.get() {
             // cannot continue sampling that isn't running
-            self.return_buffers(Some(buf), None, ReturnCode::EINVAL)
+            (ReturnCode::EINVAL, Some(buf))
 
         } else if !self.continuous.get() {
             // cannot continue a single sample operation
-            self.return_buffers(Some(buf), None, ReturnCode::EINVAL)
+            (ReturnCode::EINVAL, Some(buf))
 
         } else if self.next_dma_buffer.is_some() {
             // we've already got a second buffer, we don't need a third yet
-            self.return_buffers(Some(buf), None, ReturnCode::EBUSY)
+            (ReturnCode::EBUSY, Some(buf))
 
         } else {
 
@@ -692,7 +658,21 @@ impl hil::adc::AdcHighSpeed for Adc {
             self.next_dma_buffer.replace(buf);
             self.next_dma_length.set(length);
 
-            ReturnCode::SUCCESS
+            (ReturnCode::SUCCESS, None)
+        }
+    }
+
+    /// Reclaim buffers after the ADC is stopped.
+    /// This is expected to be called after `stop_sampling`.
+    fn retrieve_buffers(&self)
+                        -> (ReturnCode, Option<&'static mut [u16]>, Option<&'static mut [u16]>) {
+
+        if self.active.get() {
+            // cannot return buffers while running
+            (ReturnCode::EINVAL, None, None)
+        } else {
+            // we're not running, so give back whatever we've got
+            (ReturnCode::SUCCESS, self.next_dma_buffer.take(), self.stopped_buffer.take())
         }
     }
 }

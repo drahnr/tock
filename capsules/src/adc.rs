@@ -287,7 +287,14 @@ impl<'a, A: hil::adc::Adc + hil::adc::AdcHighSpeed + 'a> Adc<'a, A> {
                 self.using_app_buf1.set(true);
                 self.samples_remaining.set(request_len - len1 - len2);
                 self.samples_outstanding.set(len1 + len2);
-                self.adc.sample_highspeed(chan, frequency, buf1, len1, buf2, len2)
+                let (rc, retbuf1, retbuf2) = self.adc
+                    .sample_highspeed(chan, frequency, buf1, len1, buf2, len2);
+                if rc != ReturnCode::SUCCESS {
+                    // store buffers again
+                    retbuf1.map(|buf| { self.replace_buffer(buf); });
+                    retbuf2.map(|buf| { self.replace_buffer(buf); });
+                }
+                rc
             })
         });
         if res != ReturnCode::SUCCESS {
@@ -386,7 +393,14 @@ impl<'a, A: hil::adc::Adc + hil::adc::AdcHighSpeed + 'a> Adc<'a, A> {
 
                 // begin sampling
                 self.using_app_buf1.set(true);
-                self.adc.sample_highspeed(chan, frequency, buf1, len1, buf2, len2)
+                let (rc, retbuf1, retbuf2) = self.adc
+                    .sample_highspeed(chan, frequency, buf1, len1, buf2, len2);
+                if rc != ReturnCode::SUCCESS {
+                    // store buffers again
+                    retbuf1.map(|buf| { self.replace_buffer(buf); });
+                    retbuf2.map(|buf| { self.replace_buffer(buf); });
+                }
+                rc
             })
         });
         if res != ReturnCode::SUCCESS {
@@ -403,24 +417,34 @@ impl<'a, A: hil::adc::Adc + hil::adc::AdcHighSpeed + 'a> Adc<'a, A> {
     }
 
     /// Stops sampling the ADC
-    /// Any active operation by the ADC is canceled. In single-sample mode, no
-    /// callback will be triggered. In buffer-sample mode, a
-    /// `sampling_complete` callback will occur to return ownership of buffers
-    /// to the capsule.
+    /// Any active operation by the ADC is canceled. No additional callbacks
+    /// will occur. Also retrieves buffers from the ADC (if any)
     fn stop_sampling(&self) -> ReturnCode {
         if !self.active.get() || self.mode.get() == AdcMode::NoMode {
             // already inactive!
             return ReturnCode::SUCCESS;
         }
 
-        // we're going to leave active as true here, but set ourselves to NoMode
-        // so the client handler functions will clean up state properly when the
-        // ADC is ready again
+        // clean up state
+        self.active.set(false);
         self.mode.set(AdcMode::NoMode);
         self.app_buf_offset.set(0);
 
         // actually cancel the operation
-        self.adc.stop_sampling()
+        let rc = self.adc.stop_sampling();
+        if rc != ReturnCode::SUCCESS {
+            return rc;
+        }
+
+        // reclaim buffers
+        let (rc, buf1, buf2) = self.adc.retrieve_buffers();
+
+        // store buffers again
+        buf1.map(|buf| { self.replace_buffer(buf); });
+        buf2.map(|buf| { self.replace_buffer(buf); });
+
+        // return result
+        rc
     }
 }
 
@@ -553,7 +577,11 @@ impl<'a, A: hil::adc::Adc + hil::adc::AdcHighSpeed + 'a> hil::adc::HighSpeedClie
                                         .map_or(0, |buf| buf.len() / 2);
                                     let request_len = cmp::min(samples_needed, adc_buf.len());
                                     self.next_samples_outstanding.set(request_len);
-                                    self.adc.provide_buffer(adc_buf, request_len);
+                                    let (res, retbuf) = self.adc
+                                        .provide_buffer(adc_buf, request_len);
+                                    if res != ReturnCode::SUCCESS {
+                                        retbuf.map(|buf| { self.replace_buffer(buf); });
+                                    }
                                 });
 
                             } else {
@@ -568,7 +596,11 @@ impl<'a, A: hil::adc::Adc + hil::adc::AdcHighSpeed + 'a> hil::adc::HighSpeedClie
                                         .set(self.samples_remaining.get() - request_len);
                                     self.samples_outstanding
                                         .set(self.samples_outstanding.get() + request_len);
-                                    self.adc.provide_buffer(adc_buf, request_len);
+                                    let (res, retbuf) = self.adc
+                                        .provide_buffer(adc_buf, request_len);
+                                    if res != ReturnCode::SUCCESS {
+                                        retbuf.map(|buf| { self.replace_buffer(buf); });
+                                    }
                                 });
                             }
                         }
@@ -592,7 +624,10 @@ impl<'a, A: hil::adc::Adc + hil::adc::AdcHighSpeed + 'a> hil::adc::HighSpeedClie
                                 let samples_needed = next_app_buf.map_or(0, |buf| buf.len() / 2);
                                 let request_len = cmp::min(samples_needed, adc_buf.len());
                                 self.next_samples_outstanding.set(request_len);
-                                self.adc.provide_buffer(adc_buf, request_len);
+                                let (res, retbuf) = self.adc.provide_buffer(adc_buf, request_len);
+                                if res != ReturnCode::SUCCESS {
+                                    retbuf.map(|buf| { self.replace_buffer(buf); });
+                                }
                             });
                         }
                     }
@@ -606,7 +641,10 @@ impl<'a, A: hil::adc::Adc + hil::adc::AdcHighSpeed + 'a> hil::adc::HighSpeedClie
                         let request_len = cmp::min(self.samples_remaining.get(), adc_buf.len());
                         self.samples_remaining.set(self.samples_remaining.get() - request_len);
                         self.samples_outstanding.set(self.samples_outstanding.get() + request_len);
-                        self.adc.provide_buffer(adc_buf, request_len);
+                        let (res, retbuf) = self.adc.provide_buffer(adc_buf, request_len);
+                        if res != ReturnCode::SUCCESS {
+                            retbuf.map(|buf| { self.replace_buffer(buf); });
+                        }
                     });
                 }
 
@@ -665,6 +703,11 @@ impl<'a, A: hil::adc::Adc + hil::adc::AdcHighSpeed + 'a> hil::adc::HighSpeedClie
                             // need to actually stop sampling
                             self.adc.stop_sampling();
 
+                            // reclaim buffers and store them
+                            let (_, buf1, buf2) = self.adc.retrieve_buffers();
+                            buf1.map(|buf| { self.replace_buffer(buf); });
+                            buf2.map(|buf| { self.replace_buffer(buf); });
+
                         } else {
                             // if the mode is ContinuousBuffer, we've just
                             // switched app buffers. Reset our offset to zero
@@ -684,33 +727,6 @@ impl<'a, A: hil::adc::Adc + hil::adc::AdcHighSpeed + 'a> hil::adc::HighSpeedClie
             // still need to replace the buffer
             self.replace_buffer(buf);
         }
-    }
-
-    /// Called when sampling has been stopped or an error has occurred to
-    /// return ownership of buffers to the capsule. Both buffers should exist
-    /// if an error occurred, while only the first will exist if
-    /// `stop_sampling` was called in the `samples_ready` callback.
-    ///
-    /// buf1: reference to first buffer, possibly None
-    /// buf2: reference to second buffer, possibly None
-    /// error: return code representing the error which lead to this being
-    ///        called, SUCCESS if stopped instead
-    fn sampling_complete(&self,
-                         buf1: Option<&'static mut [u16]>,
-                         buf2: Option<&'static mut [u16]>,
-                         _error: ReturnCode) {
-
-        // figure out where to put the first buffer
-        buf1.map(|buf| { self.replace_buffer(buf); });
-
-        // figure out where to put the second buffer
-        buf2.map(|buf| { self.replace_buffer(buf); });
-
-        // we don't really care whether there was an error or just a `stop_sampling` call, just
-        // clean up state
-        self.active.set(false);
-        self.mode.set(AdcMode::NoMode);
-        self.app_buf_offset.set(0);
     }
 }
 
