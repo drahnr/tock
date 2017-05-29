@@ -326,7 +326,7 @@ pub unsafe fn reset_handler() {
                                 &mut capsules::adc::ADC_BUFFER1,
                                 &mut capsules::adc::ADC_BUFFER2,
                                 &mut capsules::adc::ADC_BUFFER3),
-        896/8);
+        864/8);
     sam4l::adc::ADC0.set_client(adc);
 
     // # GPIO
